@@ -1,0 +1,83 @@
+#!/bin/sh
+# pre-push —— 手动 push 路径上的隐私闸（**模板**：要改请改 tools/git-hooks/pre-push 再重装）
+#
+# 装：python tools/install_git_hooks.py          （幂等；写 .git/hooks/pre-push + 两个 sidecar）
+# 证：python tools/install_git_hooks.py --check  （装的那份与模板逐字节相同；core.hooksPath 没被改指）
+# 测：python verify/selftest_prepush_hook.py     （9 条夹具用例，含 --no-verify 旁路实测）
+#
+# 为什么：自动导出 job 的出口有闸（the export step），但**手动** `git commit && git push`
+# 这条路上原先一条闸都没有 —— 实测那次泄漏正是手动提交进去的。
+#
+# 判据：树（leakscan）+ 待推提交信息（pushscope_gate）+ 待推范围内的对象内容（history_gate），
+# 走 verify/prepush_gate.py。任一非 0（含 UNDECIDABLE=2）= 拒绝本次 push。
+# 本地提交不受影响：停是可逆的，发布不是。
+#
+# 边界：`git push --no-verify` 直接绕过（自证里有一条用例专门测它）；.git/hooks/ 不进版本控制，
+# 别的 clone 上没有这道闸。全程只用 shell 内建命令定位 —— cron 服务没有 PATH。
+set -u
+
+case "$0" in
+  */*) hook_dir=${0%/*} ;;
+  *)   hook_dir=. ;;
+esac
+hook_dir=$(cd "$hook_dir" 2>/dev/null && pwd) || exit 1
+# 传给**原生** python 的 argv 必须是原生路径：MSYS 形态（斜杠打头那种）一旦进原生进程会被
+# 重新解释 —— 实测踩到：闸报「can't open file 临时目录下的 prepush_gate.py」，也就是临时目录
+# 被拼到了当前盘符根下（第一次自证就是被这一条挡下的）。所以对 shell 的文件测试用 MSYS 形态，
+# 对 python 的 argv 用 pwd -W 的原生形态；Linux 上没有 pwd -W，退回 POSIX 形态（那边的 POSIX
+# 路径本来就是原生的）。注：下面这些形状描述**不写样本本身** —— 本文件也在这道闸的扫描面里
+# 。
+base=$(cd "$hook_dir/../.." 2>/dev/null && pwd) || exit 1
+repo_sh="$base"
+repo=$(cd "$base" && pwd -W 2>/dev/null) || repo=""
+[ -n "$repo" ] || repo="$repo_sh"
+gate="$repo/verify/prepush_gate.py"
+gate_sh="$repo_sh/verify/prepush_gate.py"
+
+refuse() {
+  echo "pre-push REFUSED: $1" >&2
+  echo "  （fail-closed：闸没跑 / 非 0 一律不放行；本地提交未受影响。）" >&2
+  exit 1
+}
+
+[ -f "$gate_sh" ] || refuse "找不到闸 $gate_sh"
+
+py=""
+if [ -f "$hook_dir/pre-push.python" ]; then
+  IFS= read -r py < "$hook_dir/pre-push.python" || py=""
+  [ -n "$py" ] && [ -f "$py" ] || py=""
+fi
+if [ -z "$py" ]; then
+  for c in python3 python; do
+    p=$(command -v "$c" 2>/dev/null) || p=""
+    if [ -n "$p" ]; then py="$p"; break; fi
+  done
+fi
+[ -n "$py" ] || refuse "找不到 python 解释器（cron 无 PATH）—— 用任意 python 跑一次 tools/install_git_hooks.py 写 sidecar"
+
+gb=""
+if [ -f "$hook_dir/pre-push.git" ]; then
+  IFS= read -r gb < "$hook_dir/pre-push.git" || gb=""
+  [ -n "$gb" ] && [ -f "$gb" ] || gb=""
+fi
+
+rc=0
+while read -r lref lsha rref rsha; do
+  [ -n "${lref:-}" ] || continue
+  case "$rsha" in 0000000000000000000000000000000000000000) rsha="" ;; esac
+  if [ -n "$rsha" ]; then
+    if [ -n "$gb" ]; then
+      "$py" "$gate" --repo "$repo" --upstream "$rsha" --git "$gb" || rc=1
+    else
+      "$py" "$gate" --repo "$repo" --upstream "$rsha" || rc=1
+    fi
+  else
+    if [ -n "$gb" ]; then
+      "$py" "$gate" --repo "$repo" --git "$gb" || rc=1
+    else
+      "$py" "$gate" --repo "$repo" || rc=1
+    fi
+  fi
+done
+[ "$rc" -eq 0 ] || refuse "隐私闸非 0（上面每行 [gate] / LEAK 就是判据输出）"
+exit 0

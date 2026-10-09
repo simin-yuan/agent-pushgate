@@ -71,6 +71,12 @@ dependencies** (stdlib only; git is required for the history/push-scope gates).
 - CI can only run `--shape-only` (no word-list in a clean clone); a green CI run **does not
   prove** the literal term layer is clean.
 
+## Related tools
+
+- **[greencheck](https://github.com/simin-yuan/greencheck)** — mutation testing for validators.
+- **[precheck](https://github.com/simin-yuan/precheck)** — prove claims with frozen, pre-registered checks.
+- **[self-auditing-agent](https://github.com/simin-yuan/self-auditing-agent)** — an agent auditing its own workflow.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

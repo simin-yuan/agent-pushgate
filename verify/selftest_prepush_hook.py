@@ -1,24 +1,30 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""selftest_prepush_hook.py — pre-push 那道闸的自证（全在临时夹具仓里，不碰本仓）
+"""selftest_prepush_hook.py -- self-test for the pre-push gate (everything inside a temp fixture
+repo; does not touch this repo)
 
-判据能不能给出否定结果：能。每条用例都是一次**真实的 git push**，只看两样硬证据：
-  ① 远端分支 ref 动没动（`git rev-parse main` on the bare remote）
-  ② 闸的留痕日志（<夹具>/.git/prepush_gate.log）有没有新行、rc 是几
-不看代码里写了什么，也不看人说了什么。
+Can the checks produce a negative result: yes. Every case is a **real git push** and only two
+pieces of hard evidence are accepted:
+  1. did the remote branch ref move (`git rev-parse main` on the bare remote)
+  2. did the gate's trace log (<fixture>/.git/prepush_gate.log) get a new line, and what rc
+It does not look at what the code says, nor at what a person says.
 
-用例
-  A 绿路        干净提交 -> push 成功、远端 ref == 本地 HEAD（闸不许误拦）
-  B 树脏        提交体里带词表的字面词 -> 拒绝、远端 ref 不动、日志 rc=1
-  C 信息脏      提交信息里带盘符路径形状 -> 拒绝、远端 ref 不动
-  D 词表缺      没有词表 -> 三闸 UNDECIDABLE(2) -> 拒绝（「没查」不许当「干净」）
-  E 无 PATH + sidecar     -> 闸照样跑（日志新行 rc=0）、push 成功（cron 式环境）
-  F 无 PATH 且无 sidecar  -> 找不到解释器 -> 拒绝（fail-closed，不是静默放行）
-  G --no-verify 旁路      -> **能绕过**：远端照动、日志无新行（把这个洞测出来，不假装它不存在）
-  H 装了又改            -> install --check 必须 rc=1（内容漂移）
-  I core.hooksPath 改指 -> install --check 必须 rc=1（装了等于没装）
+Cases
+  A clean path        clean commit -> push succeeds, remote ref == local HEAD (the gate must not
+                      falsely block)
+  B dirty tree        a literal term from the term list in the committed body -> refused, remote
+                      ref does not move, log rc=1
+  C dirty message     a drive-path shape in the commit message -> refused, remote ref does not move
+  D missing term list no term list -> the three gates UNDECIDABLE(2) -> refuse ("not checked" may
+                      not be treated as "clean")
+  E no PATH + sidecar -> the gate still runs (new log line rc=0), push succeeds (cron-style env)
+  F no PATH and no sidecar -> interpreter not found -> refuse (fail-closed, not a silent pass)
+  G --no-verify bypass -> **can bypass**: the remote moves, the log gets no new line (measure the
+                      hole, do not pretend it does not exist)
+  H installed then edited -> install --check must be rc=1 (content drift)
+  I core.hooksPath redirected -> install --check must be rc=1 (installing amounts to not installing)
 
-用法：python verify/selftest_prepush_hook.py   → 末行 N/N，全过 rc=0。
+Usage: python verify/selftest_prepush_hook.py   -> last line N/N, all pass rc=0.
 """
 import os
 import re
@@ -33,7 +39,8 @@ sys.path.insert(0, HERE)
 import pushscope_gate                                              # noqa: E402
 
 GIT = pushscope_gate.find_git()
-#: 坏样本按**拼接**造，不写字面量 —— 本文件也在这道闸的扫描面里。
+#: bad samples are built by **concatenation**, never written literally -- this file is inside
+#: this gate's scan surface too.
 SHAPE = "E" + ":" + "/" + "tmp" + "/" + "sample.txt"
 TERM = "zq" + "wflagterm"
 ENV = dict(os.environ)
@@ -57,7 +64,7 @@ def git(args, cwd, env=None, check=True):
     r = subprocess.run([GIT] + list(args), cwd=cwd, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", env=env or ENV, timeout=180)
     if check and r.returncode != 0:
-        raise RuntimeError("git %s 失败：%s" % (" ".join(args), (r.stderr or "")[-400:]))
+        raise RuntimeError("git %s failed: %s" % (" ".join(args), (r.stderr or "")[-400:]))
     return r
 
 
@@ -68,7 +75,8 @@ def write(path, text):
 
 
 def build(root, name, with_terms=True):
-    """造一个夹具仓：bare 远端 + 工作仓（含本仓的闸与安装器），基线**在装 hook 之前**推上去。"""
+    """Build a fixture repo: bare remote + work repo (with this repo's gates and installer); the
+    baseline is pushed **before the hook is installed**."""
     remote = os.path.join(root, name + "-remote.git")
     work = os.path.join(root, name + "-work")
     git(["init", "--bare", "-b", "main", remote], cwd=root)
@@ -85,7 +93,7 @@ def build(root, name, with_terms=True):
     write(os.path.join(work, ".gitignore"), "_local/\n")
     if with_terms:
         write(os.path.join(work, "_local", "privterms.txt"),
-              "# 夹具词表（自造词，不是真词）\n" + TERM + "\n")
+              "# fixture term list (synthetic, not a real term)\n" + TERM + "\n")
     write(os.path.join(work, "README.md"), "fixture\n")
     git(["add", "-A"], cwd=work)
     git(["commit", "-m", "baseline"], cwd=work)
@@ -125,11 +133,14 @@ def log_lines(work):
 
 
 def strip_path(root):
-    """cron 式环境：PATH 里**没有 python**（其它一律不动，git 照常工作）。
+    """A cron-style environment: **no python** on PATH (nothing else is changed; git works as
+    usual).
 
-    做法：把原 PATH 里「含 python/python3/py」的那些目录摘掉。比整条 PATH 清空更接近
-    要问的那个问题（闸能不能在没有 python 的 PATH 下靠 sidecar 起来），也不会把 git 自己
-    搞残（实测：PATH 清空/只留 git 那一层时，git 自己就崩了，那样的红不说明闸的事）。
+    Method: drop the directories of the original PATH that contain python/python3/py. This is
+    closer to the question being asked (can the gate come up via its sidecar without python on
+    PATH) than clearing the whole PATH, and it does not cripple git itself (measured: with PATH
+    cleared or reduced to just the git layer, git itself broke, and that red says nothing about
+    the gate).
     """
     parts = [p for p in (ENV.get("PATH") or "").split(os.pathsep) if p]
     keep = [p for p in parts if not path_has_python(p)]
@@ -147,7 +158,7 @@ def path_has_python(path):
 
 
 def last_log_rc(work):
-    """→ 最后一行留痕里的 rc（没有日志 = None）。"""
+    """-> the rc on the last trace line (None when there is no log)."""
     ls = log_lines(work)
     if not ls:
         return None
@@ -166,9 +177,9 @@ def case_a(root, res):
     git(["add", "-A"], cwd=work)
     git(["commit", "-m", "docs: add a clean note"], cwd=work)
     r = push(work)
-    res.ok(r.returncode == 0, "A1 干净范围 push 成功", (r.stderr or "")[-200:])
-    res.ok(remote_head(remote) == local_head(work), "A2 远端 ref 已前进到本地 HEAD")
-    res.ok(last_log_rc(work) == 0, "A3 留痕日志 rc=0（闸真的为这次 push 跑过）",
+    res.ok(r.returncode == 0, "A1 clean range pushes fine", (r.stderr or "")[-200:])
+    res.ok(remote_head(remote) == local_head(work), "A2 remote ref advanced to local HEAD")
+    res.ok(last_log_rc(work) == 0, "A3 trace log rc=0 (the gate really ran for this push)",
            "rc=%s" % last_log_rc(work))
 
 
@@ -180,10 +191,10 @@ def case_b(root, res):
     git(["add", "-A"], cwd=work)
     git(["commit", "-m", "docs: add sample"], cwd=work)
     r = push(work)
-    res.ok(r.returncode != 0, "B1 树里带字面词 -> push 被拒", "rc=%s" % r.returncode)
-    res.ok("REFUSED" in (r.stderr or ""), "B2 拒绝理由出现在 stderr")
-    res.ok(remote_head(remote) == before, "B3 远端 ref 未动")
-    res.ok(last_log_rc(work) == 1, "B4 留痕日志 rc=1", "rc=%s" % last_log_rc(work))
+    res.ok(r.returncode != 0, "B1 literal term in the tree -> push refused", "rc=%s" % r.returncode)
+    res.ok("REFUSED" in (r.stderr or ""), "B2 refusal reason appears on stderr")
+    res.ok(remote_head(remote) == before, "B3 remote ref did not move")
+    res.ok(last_log_rc(work) == 1, "B4 trace log rc=1", "rc=%s" % last_log_rc(work))
 
 
 def case_c(root, res):
@@ -194,9 +205,9 @@ def case_c(root, res):
     git(["add", "-A"], cwd=work)
     git(["commit", "-m", "docs: note about " + SHAPE], cwd=work)
     r = push(work)
-    res.ok(r.returncode != 0, "C1 提交信息里带路径形状 -> push 被拒", "rc=%s" % r.returncode)
-    res.ok(remote_head(remote) == before, "C2 远端 ref 未动")
-    res.ok(last_log_rc(work) == 1, "C3 留痕日志 rc=1", "rc=%s" % last_log_rc(work))
+    res.ok(r.returncode != 0, "C1 drive-path shape in the commit message -> push refused", "rc=%s" % r.returncode)
+    res.ok(remote_head(remote) == before, "C2 remote ref did not move")
+    res.ok(last_log_rc(work) == 1, "C3 trace log rc=1", "rc=%s" % last_log_rc(work))
 
 
 def case_d(root, res):
@@ -207,26 +218,26 @@ def case_d(root, res):
     git(["add", "-A"], cwd=work)
     git(["commit", "-m", "docs: add a clean note"], cwd=work)
     r = push(work)
-    res.ok(r.returncode != 0, "D1 没有词表 -> 拒绝（没查 != 干净）", "rc=%s" % r.returncode)
-    res.ok(remote_head(remote) == before, "D2 远端 ref 未动")
-    res.ok(last_log_rc(work) == 2, "D3 留痕日志 rc=2（UNDECIDABLE）", "rc=%s" % last_log_rc(work))
+    res.ok(r.returncode != 0, "D1 no term list -> refuse (not checked != clean)", "rc=%s" % r.returncode)
+    res.ok(remote_head(remote) == before, "D2 remote ref did not move")
+    res.ok(last_log_rc(work) == 2, "D3 trace log rc=2 (UNDECIDABLE)", "rc=%s" % last_log_rc(work))
 
 
 def case_e(root, res):
     work, remote = build(root, "e")
     install(work)
     env, keep = strip_path(root)
-    res.ok(not path_has_python(os.pathsep.join(keep)), "E0 前提：这条 PATH 里确实没有 python",
-           "keep=%d 项" % len(keep))
+    res.ok(not path_has_python(os.pathsep.join(keep)), "E0 precondition: this PATH really has no python",
+           "keep=%d entries" % len(keep))
     write(os.path.join(work, "notes.md"), "clean line\n")
     git(["add", "-A"], cwd=work, env=env)
     git(["commit", "-m", "docs: add a clean note"], cwd=work, env=env)
     r = push(work, env=env)
     ls = log_lines(work)
-    res.ok(r.returncode == 0, "E1 PATH 里没有 python/git 时仍 push 成功（走 sidecar）",
+    res.ok(r.returncode == 0, "E1 still pushes fine with no python/git on PATH (via the sidecar)",
            (r.stderr or "")[-200:])
-    res.ok(remote_head(remote) == local_head(work), "E2 远端 ref 已前进")
-    res.ok(last_log_rc(work) == 0, "E3 闸真的跑了（留痕 rc=0）", "rc=%s" % last_log_rc(work))
+    res.ok(remote_head(remote) == local_head(work), "E2 remote ref advanced")
+    res.ok(last_log_rc(work) == 0, "E3 the gate really ran (trace rc=0)", "rc=%s" % last_log_rc(work))
 
 
 def case_f(root, res):
@@ -239,10 +250,10 @@ def case_f(root, res):
     git(["add", "-A"], cwd=work, env=env)
     git(["commit", "-m", "docs: add a clean note"], cwd=work, env=env)
     r = push(work, env=env)
-    res.ok(r.returncode != 0, "F1 找不到解释器 -> 拒绝（fail-closed）", "rc=%s" % r.returncode)
-    res.ok("解释器" in (r.stderr or "") or "REFUSED" in (r.stderr or ""), "F2 拒绝理由出现在 stderr")
-    res.ok(remote_head(remote) == before, "F3 远端 ref 未动")
-    res.ok(not log_lines(work), "F4 日志为空（闸确实没跑起来，没有被伪装成跑了）")
+    res.ok(r.returncode != 0, "F1 interpreter not found -> refuse (fail-closed)", "rc=%s" % r.returncode)
+    res.ok("interpreter" in (r.stderr or "") or "REFUSED" in (r.stderr or ""), "F2 refusal reason appears on stderr")
+    res.ok(remote_head(remote) == before, "F3 remote ref did not move")
+    res.ok(not log_lines(work), "F4 log is empty (the gate really did not start; not disguised as having run)")
 
 
 def case_g(root, res):
@@ -253,9 +264,9 @@ def case_g(root, res):
     git(["add", "-A"], cwd=work)
     git(["commit", "-m", "docs: note about " + SHAPE], cwd=work)
     r = push(work, extra=("--no-verify",))
-    res.ok(r.returncode == 0, "G1 --no-verify 能绕过（洞被证实，不是假设）", "rc=%s" % r.returncode)
-    res.ok(remote_head(remote) == local_head(work), "G2 脏提交信息照样推出去了")
-    res.ok(len(log_lines(work)) == before_lines, "G3 日志无新行 —— 旁路不留痕迹，这是已知边界")
+    res.ok(r.returncode == 0, "G1 --no-verify bypasses it (the hole is proven, not assumed)", "rc=%s" % r.returncode)
+    res.ok(remote_head(remote) == local_head(work), "G2 the dirty commit message went out anyway")
+    res.ok(len(log_lines(work)) == before_lines, "G3 no new log lines -- the bypass leaves no trace, a known boundary")
 
 
 def case_h(root, res):
@@ -264,7 +275,7 @@ def case_h(root, res):
     with open(os.path.join(work, ".git", "hooks", "pre-push"), "a", encoding="utf-8") as fh:
         fh.write("# tampered\n")
     r = check(work)
-    res.ok(r.returncode == 1, "H1 已装 hook 被改 -> --check rc=1", "rc=%s stdout=%s"
+    res.ok(r.returncode == 1, "H1 installed hook tampered -> --check rc=1", "rc=%s stdout=%s"
            % (r.returncode, (r.stdout or "")[-160:].replace("\n", " / ")))
 
 
@@ -275,24 +286,24 @@ def case_i(root, res):
     os.makedirs(other, exist_ok=True)
     git(["config", "core.hooksPath", other], cwd=work)
     r = check(work)
-    res.ok(r.returncode == 1, "I1 core.hooksPath 改指 -> --check rc=1（装了等于没装）",
+    res.ok(r.returncode == 1, "I1 core.hooksPath redirected -> --check rc=1 (installing amounts to not installing)",
            "rc=%s stdout=%s" % (r.returncode, (r.stdout or "")[-160:].replace("\n", " / ")))
 
 
 def main():
     if not GIT:
-        print("ERROR：找不到 git，无法跑夹具")
+        print("ERROR: no git found, cannot run the fixtures")
         return 3
     res = Res()
     root = tempfile.mkdtemp(prefix="prepush-selftest-")
     try:
-        print("夹具根：%s（跑完删）" % os.path.basename(root))
+        print("fixture root: %s (deleted on exit)" % os.path.basename(root))
         for fn in (case_a, case_b, case_c, case_d, case_e, case_f, case_g, case_h, case_i):
-            print("· %s" % fn.__name__)
+            print("- %s" % fn.__name__)
             try:
                 fn(root, res)
             except Exception as e:                                 # noqa: BLE001
-                res.ok(False, "%s 抛出异常" % fn.__name__, "%s: %s" % (type(e).__name__, e))
+                res.ok(False, "%s raised an exception" % fn.__name__, "%s: %s" % (type(e).__name__, e))
     finally:
         shutil.rmtree(root, ignore_errors=True)
     print("\nSUMMARY %d/%d" % (res.n - len(res.fails), res.n))

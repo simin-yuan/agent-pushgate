@@ -1,38 +1,49 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""bridge_landed.py — 导出**落地腿**到底落地了没有？
+"""bridge_landed.py -- did the export **landing leg** actually land?
 
-一句话背景：export job 在本机 commit 一次，再 push。**本地 HEAD 前进 ≠ 远程收到。**
-实测过一次：本地多出一个提交、导出步骤的 stdout 空、记录仍 ok，
-而远程 main 原地不动 —— 从「本机看」一切正常，从「外面看」这次推送已经停了。
+One-line background: the export job commits locally once, then pushes. **Local HEAD moving
+forward is not the same as the remote receiving it.** Measured once: locally one extra commit
+appeared, the export step's stdout was empty, the record still said ok, and remote main did not
+move at all -- from "on this machine" everything looked fine, from "outside" this push had
+already stopped.
 
-本判据只回答一件事：本地领先 `origin/<branch>` 的提交里，**最老的那个已经等了多久**。
+This check answers one thing only: among the commits by which local is ahead of
+`origin/<branch>`, **how long has the oldest one been waiting**.
 
-用法
+Usage
     python verify/bridge_landed.py [--repo R] [--remote origin] [--branch main]
                                    [--max-age-h 2.0] [--git PATH]
 
-退出码
-    0 PASS        落地（HEAD == 远程），或在容忍窗内刚提交（PENDING）
-    1 FAIL        有提交卡在本地超过 --max-age-h（输出腿没落地）
-    2 UNDECIDABLE 取不到远程（网络 / 工具缺失 / 远程对象不在本地）—— **不得当 0 读**
-    3 ERROR       其它异常
+Exit codes
+    0 PASS        landed (HEAD == remote), or committed just now within the tolerance window (PENDING)
+    1 FAIL        a commit has been stuck locally longer than --max-age-h (the output leg did not land)
+    2 UNDECIDABLE the remote could not be read (network / tool missing / remote object not local)
+                  -- **must not be read as 0**
+    3 ERROR       any other exception
 
-判据能否给出否定结果
-    能。`verify/selftest_bridge_landed.py` 用**本地裸仓**自造四种状态各跑一遍
-    （落地 0 / 刚提交 0 / 卡住 1 / 取不到远程 2），四种状态全部走真的 git 调用，不 mock。
-    `--max-age-h` 默认 2.0 是**选择**不是测量：导出节拍 12h、一次成功的推送是秒级，
-    两小时还没落地只能是腿断了。改这个数 = 改判据。
+Can the checks produce a negative result?
+    Yes. `verify/selftest_bridge_landed.py` builds four states with a **local bare repo** and
+    runs each once (landed 0 / just committed 0 / stuck 1 / remote unreachable 2); all four
+    states go through real git calls, no mocks. `--max-age-h` default 2.0 is a **choice**, not a
+    measurement: the export cadence is 12h and a successful push takes seconds, so anything
+    still not landed after two hours can only mean the leg is broken. Changing this number =
+    changing the check.
 
-范围 —— 本工具**不包含**什么（缺这一节，判据就会被当成它撑不住的东西）
-    · 只比 sha；不判远程内容与本地内容是否一致。
-    · 不判失败原因（凭证 / 网络 / 权限），**不读任何凭证**，不做任何网络写操作。
-    · 不判 GitHub 侧的门跑没跑（那是 verify/check.py 的事）。
-    · 年龄取提交者时间 `%cI`，且**依据本机时钟**；本机时钟错，年龄就错。
-    · 远程 sha 走 `git ls-remote`（权威），**不**走本地 `origin/*` 跟踪 ref ——
-      后者只由本机 push/fetch 更新，腿断了它自己不会知道（它当时还停在旧值上）。
-    · 算得出「最老的未落地提交多大岁数」≠「它等推送等了多久」：后者本机测不到，
-      这里只是用前者近似「上一次成功落地距今」。
+Scope -- what this tool does **not** cover (without this section the checks get treated as
+something they cannot support)
+    - It compares shas only; it does not judge whether remote content matches local content.
+    - It does not judge the cause of failure (credentials / network / permissions), it reads
+      **no credentials** and performs no network write.
+    - It does not judge whether the GitHub-side gates ran (that is verify/check.py's job).
+    - The age is taken from the committer timestamp `%cI`, and it **depends on the local clock**;
+      if the local clock is wrong, the age is wrong.
+    - The remote sha comes from `git ls-remote` (authoritative), **not** from the local
+      `origin/*` tracking ref -- the latter is only updated by this machine's push/fetch, so a
+      broken leg would not know (it was still sitting on the old value).
+    - Being able to compute "how old the oldest unlanded commit is" is not the same as "how long
+      it has waited to be pushed": the latter cannot be measured locally; this is only an
+      approximation of "time since the last successful landing".
 """
 import argparse
 import datetime
@@ -50,7 +61,7 @@ PASS, FAIL, UNDECIDABLE, ERROR = 0, 1, 2, 3
 
 
 def find_git(explicit=None):
-    """cron 服务没有 PATH，所以逐条候选找，不靠 which。"""
+    """The cron service has no PATH, so try candidates in turn instead of relying on which."""
     cands = [explicit, os.environ.get("BRIDGE_GIT")]
     home = os.environ.get("HERMES_HOME")
     if home:
@@ -87,7 +98,7 @@ def remote_head(git, repo, remote, branch):
 
 
 def unpushed(git, repo, remote_sha):
-    """→ [(sha, iso_committer_date)]，remote_sha..HEAD。远程对象不在本地 → None。"""
+    """-> [(sha, iso_committer_date)] for remote_sha..HEAD. Remote object not local -> None."""
     r = git_run(git, repo, ["log", "--format=%H|%cI", "%s..HEAD" % remote_sha])
     if r.returncode != 0:
         return None
@@ -101,7 +112,8 @@ def unpushed(git, repo, remote_sha):
 
 
 def oldest_age_h(rows, now=None):
-    """最老的未落地提交距现在多少小时。解析不了一律返回 None（不猜 0）。"""
+    """How many hours since the oldest unlanded commit. Returns None if it cannot be parsed
+    (does not guess 0)."""
     stamps = []
     for _sha, iso in rows or []:
         try:
@@ -115,26 +127,27 @@ def oldest_age_h(rows, now=None):
 
 
 def decide(local_sha, remote_sha, age_h, max_age_h):
-    """纯判定：拿不到的那几种一律 UNDECIDABLE，绝不静默降级成 PASS。"""
+    """Pure decision: anything that cannot be obtained is UNDECIDABLE, never silently degraded
+    to PASS."""
     if not local_sha or not remote_sha:
         return UNDECIDABLE, "UNDECIDABLE", [
-            "拿不到本地或远程 sha（远程没回答 / 工具缺失）—— 这不是「落地了」"]
+            "could not get the local or remote sha (the remote did not answer / tool missing) -- this is not 'landed'"]
     if local_sha == remote_sha:
-        return PASS, "LANDED", ["本地 HEAD == 远程 %s" % local_sha[:10]]
+        return PASS, "LANDED", ["local HEAD == remote %s" % local_sha[:10]]
     if age_h is None:
         return UNDECIDABLE, "UNDECIDABLE", [
-            "本地领先远程，但算不出落后提交的年龄（时间戳解析失败 / 本地没有该远程对象）"]
+            "local is ahead of remote, but the age of the lagging commits cannot be computed (timestamp parse failed / the remote object is not local)"]
     if age_h > max_age_h:
         return FAIL, "STALE", [
-            "本地领先远程，最老的未落地提交已 %.2fh（> %.2fh）—— 输出腿没落地"
+            "local is ahead of remote, oldest unlanded commit is %.2fh old (> %.2fh) -- the output leg did not land"
             % (age_h, max_age_h)]
     return PASS, "PENDING", [
-        "本地领先远程，最老的未落地提交 %.2fh，仍在 %.2fh 容忍窗内"
+        "local is ahead of remote, oldest unlanded commit is %.2fh old, still within the %.2fh tolerance window"
         % (age_h, max_age_h)]
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="本地提交有没有真正推上去（本地 HEAD vs 远程 branch）")
+    ap = argparse.ArgumentParser(description="Has the local commit actually been pushed (local HEAD vs remote branch)")
     ap.add_argument("--repo", default=REPO)
     ap.add_argument("--remote", default="origin")
     ap.add_argument("--branch", default="main")
@@ -145,7 +158,7 @@ def main(argv=None):
     try:
         git = find_git(a.git)
         if not git:
-            print("R0 INTERNAL ERROR   找不到 git（cron 无 PATH，用 --git 显式给）")
+            print("R0 INTERNAL ERROR   no git found (cron has no PATH; pass --git explicitly)")
             print("SUMMARY rc=%d" % ERROR)
             return ERROR
         lsha = local_head(git, a.repo)
@@ -160,11 +173,11 @@ def main(argv=None):
 
     print("bridge_landed repo=%s remote=%s/%s max_age=%.2fh" % (a.repo, a.remote, a.branch,
                                                                a.max_age_h))
-    print("  local  HEAD   %s" % (lsha or "(取不到)"))
-    print("  remote %-6s %s" % (a.branch, rsha or "(取不到)"))
+    print("  local  HEAD   %s" % (lsha or "(unavailable)"))
+    print("  remote %-6s %s" % (a.branch, rsha or "(unavailable)"))
     if rows:
-        print("  未落地提交 %d 个，最老 %.2fh：%s" % (len(rows), age if age else -1,
-                                                      rows[-1][0][:10]))
+        print("  unlanded commits: %d, oldest %.2fh: %s" % (len(rows), age if age else -1,
+                                                            rows[-1][0][:10]))
     for n in notes:
         print("  %s" % n)
     print("SUMMARY status=%s rc=%d" % (status, rc))

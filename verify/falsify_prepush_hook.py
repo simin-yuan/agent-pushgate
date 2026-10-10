@@ -1,16 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""falsify_prepush_hook.py — 先证伪检查，再信任它（自检本身必须会红）
+"""falsify_prepush_hook.py -- falsify the check first, then trust it (the self-test itself must
+be able to go red)
 
-对三个部件各做一次「改坏」的变异，然后把**对应**的用例跑在变异副本上：
-变异体必须在相关用例上红；对照组（不改）必须绿。打不红的检查是装饰。
+Apply one "break it" mutation to each of the three parts, then run the **corresponding** cases
+against the mutated copy: the mutant must go red on the relevant cases, and the control
+(unmutated) must be green. A check you cannot make fail is decoration.
 
-  F1 tools/git-hooks/pre-push  拒绝分支改成不放行也返回 0  -> case_b/c/d 必红
-  F2 verify/prepush_gate.py    UNDECIDABLE 被折成 PASS      -> case_d 必红
-  F3 tools/install_git_hooks.py 内容漂移检查被短路          -> case_h 必红
-  C  对照组：不改任何东西                                    -> case_a 必绿
+  F1 tools/git-hooks/pre-push     the refusal branch returns 0 even when not letting through -> case_b/c/d must go red
+  F2 verify/prepush_gate.py       UNDECIDABLE folded into PASS                          -> case_d must go red
+  F3 tools/install_git_hooks.py   the content-drift check short-circuited                -> case_h must go red
+  C  control: change nothing                                                            -> case_a must be green
 
-用法：python verify/falsify_prepush_hook.py  → 末行 N/N，rc=0 表示变异全被抓住。
+Usage: python verify/falsify_prepush_hook.py  -> last line N/N, rc=0 means every mutation was
+caught.
 """
 import importlib.util
 import os
@@ -21,15 +24,15 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.normpath(os.path.join(HERE, os.pardir))
 MUTATIONS = [
-    ("F1 hook 永不放行也不拒绝",
+    ("F1 hook never refuses and never lets through",
      os.path.join("tools", "git-hooks", "pre-push"),
-     '[ "$rc" -eq 0 ] || refuse "隐私闸非 0',
+     '[ "$rc" -eq 0 ] || refuse "privacy gate returned non-zero',
      '[ "$rc" -eq 0 ] || true #'),
-    ("F2 UNDECIDABLE 折成 PASS",
+    ("F2 UNDECIDABLE folded into PASS",
      os.path.join("verify", "prepush_gate.py"),
      "    elif UNDECIDABLE in rcs:\n        out = UNDECIDABLE",
      "    elif UNDECIDABLE in rcs:\n        out = PASS"),
-    ("F3 漂移检查被短路",
+    ("F3 drift check short-circuited",
      os.path.join("tools", "install_git_hooks.py"),
      "    if isha != tsha:",
      "    if False:"),
@@ -67,19 +70,19 @@ def run_cases(mod, names):
             try:
                 getattr(mod, n)(root, res)
             except Exception as e:                                 # noqa: BLE001
-                res.ok(False, "%s 抛异常" % n, "%s: %s" % (type(e).__name__, e))
+                res.ok(False, "%s raised an exception" % n, "%s: %s" % (type(e).__name__, e))
     finally:
         shutil.rmtree(root, ignore_errors=True)
     return res
 
 
 def main():
-    print("对照组（不改任何东西）")
+    print("control (change nothing)")
     cdir = make_copy("C")
     cmod = load_mod(cdir, "C")
     cres = run_cases(cmod, ["case_a"])
     ok_control = not cres.fails
-    print("  %s  对照组 case_a（%d 断言）" % ("PASS" if ok_control else "FAIL", cres.n))
+    print("  %s  control case_a (%d assertions)" % ("PASS" if ok_control else "FAIL", cres.n))
 
     total, caught = 1, 1 if ok_control else 0
     for label, path, a, b in MUTATIONS:
@@ -89,7 +92,7 @@ def main():
         with open(target, encoding="utf-8", newline="") as fh:
             src = fh.read()
         if a not in src:
-            print("  UNDECIDABLE  %s：找不到要改的锚点（判据自己漂了）" % label)
+            print("  UNDECIDABLE  %s: the anchor to mutate was not found (the check itself drifted)" % label)
             total += 1
             continue
         with open(target, "w", encoding="utf-8", newline="") as fh:
@@ -99,10 +102,10 @@ def main():
         total += 1
         if res.fails:
             caught += 1
-            print("  PASS  %s -> 变异体被 %s 抓住（%d 断言里红 %d）"
+            print("  PASS  %s -> the mutant was caught by %s (red in %d of %d assertions)"
                   % (label, "/".join(CASES[tag]), res.n, len(res.fails)))
         else:
-            print("  FAIL  %s -> 变异体没被抓住（这套自检是装饰）" % label)
+            print("  FAIL  %s -> the mutant was not caught (this self-test is decoration)" % label)
         shutil.rmtree(os.path.dirname(dst), ignore_errors=True)
     shutil.rmtree(os.path.dirname(cdir), ignore_errors=True)
     print("\nSUMMARY %d/%d" % (caught, total))

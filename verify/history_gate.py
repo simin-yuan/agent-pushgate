@@ -1,43 +1,59 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""history_gate.py — 待推范围里的**对象内容**闸：一次 push 送走的第三样东西
+"""history_gate.py -- the **object-content** gate for the range about to be pushed: the third
+thing a single push sends.
 
-为什么需要它
-  发布面已经被拆成两半、各有一道闸：
-    ① 树        —— HEAD 的文件内容                 → verify/leakscan.py
-    ② 提交信息   —— `<upstream>..HEAD` 的 message    → verify/pushscope_gate.py
-  但 `git push` 送走的是**整个新对象集**（`git rev-list --objects <upstream>..HEAD`）。
-  于是「一个文件在中间某个提交里带过敏感串、后来又被改干净」这种最普通的情形下：
-  树闸绿（HEAD 干净）、信息闸绿（message 干净），而**那一版 blob 仍随这次 push 出去**、
-  写进 GitHub 的永久历史 —— 不可回改。本闸就是那第三样。
+Why it is needed
+  The publishing surface is already split in two, each with its own gate:
+    1. tree        -- the file content at HEAD            -> verify/leakscan.py
+    2. commit msg  -- the messages in `<upstream>..HEAD`  -> verify/pushscope_gate.py
+  But `git push` sends the **whole new object set** (`git rev-list --objects
+  <upstream>..HEAD`). So in the most ordinary case -- "a file carried a sensitive string in
+  some middle commit and was later cleaned up" -- the tree gate is green (HEAD is clean) and
+  the message gate is green (messages are clean), yet **that blob is still sent by this push**
+  and written into GitHub's permanent history, which cannot be rewritten. This gate is that
+  third thing.
 
-范围 —— 本工具不包含什么（缺这一节，判据就会被当成它撑不住的东西）
-  · 只扫 `<upstream>..HEAD` **范围内**的对象（= 这次真会传过去的东西）。已经在上游的对象不扫：
-    推不走的不是这一次的风险。
-  · 不扫 message（那是 pushscope_gate 的活）；不判 tag / 分支名 / reflog / stash / notes / PR 正文；
-    不判**不可达对象**（rewrite 后的旧对象仍留在本地对象库与 reflog 里 —— 那是本机风险，
-    不是发布面，要清是另一件事）。以上均为**未知**，不写成「没有」。
-  · 不判语义换写（同音 / 拼音 / 缩写 / 拆分拼接），与 leakscan 同一条盲区。
-  · 只扫文本：前 4KB 含 NUL 的 blob 跳过并计数 —— 本工具不判二进制里嵌的信息。
-  · 与 leakscan 天然**重叠**（HEAD 的那些 blob 也在范围内）。价值在「只在中间提交里存在」的
-    blob，故报告单列 novel 计数，让重叠部分可度量，而不是让读的人自己去分辨。
-  · 同一内容挂在多个路径时（rev-list 只给首个路径）只报一条；命中样本默认打码（只给长度）——
-    本闸的 stdout 会被 the export step 折进下一条提交信息。要看字面用
-    `--show-samples`，只在输出不进任何发布面时用。
-  · **豁免沿用树闸的同一份 ALLOW**（`leakscan.ALLOW`，逐条写明理由）。必须如此：范围内一大半
-    命中来自形状规则**自己的源码**（写规则的文件天然含被禁形态），不给同一份豁免，这道闸就会
-    永远红 —— 一道永远拒绝的闸和没有闸等价。同一处豁免在两道闸上必须给出同一个答案。
+Scope -- what this tool does **not** cover (without this section the checks get treated as
+something they cannot support)
+  - It scans only the objects **inside** `<upstream>..HEAD` (= what will actually be sent).
+    Objects already upstream are not scanned: what cannot be pushed is not this push's risk.
+  - It does not scan messages (that is pushscope_gate's job); it does not judge tag / branch
+    names / reflog / stash / notes / PR bodies; it does not judge **unreachable objects**
+    (old objects left behind by a rewrite still sit in the local object store and reflog --
+    that is a local-machine risk, not the publishing surface, and cleaning it is a separate
+    concern). All of the above are **unknown**, not "absent".
+  - It does not judge semantic re-spellings (homophones / transliteration / abbreviations /
+    splitting and concatenation) -- the same blind spot as leakscan.
+  - Text only: a blob whose first 4KB contain NUL is skipped and counted -- this tool does not
+    inspect information embedded in binaries.
+  - It naturally **overlaps** with leakscan (the HEAD blobs are also in range). The value is
+    in the blobs that exist "only in a middle commit", so the report gives a separate novel
+    count, making the overlap measurable rather than leaving it to the reader.
+  - When the same content hangs off several paths (rev-list gives only the first path) it is
+    reported once; hit samples are masked by default (length only) -- this gate's stdout is
+    folded into the next commit message by the export step. To see the literal text use
+    `--show-samples`, only when the output reaches no publishing surface.
+  - **Exemptions reuse the tree gate's own ALLOW** (`leakscan.ALLOW`, each item with a written
+    reason). This is required: over half the in-range hits come from the shape rules' **own
+    source** (a file that writes the rules inherently contains forbidden shapes), and without
+    the same exemptions this gate could never go green -- a gate that always refuses is equal
+    to no gate. The same exemption must give the same answer on both gates.
 
-判据能否给出否定结果
-  `verify/selftest_history_gate.py` 在 temp 里自造本地裸仓摆状态，核心用例是
-  「中间提交引入脏 blob、后一个提交把它删掉」：**同一夹具上 leakscan(树) 必须 rc=0，本闸必须 rc=1**
-  —— 那才是本闸存在的理由。另有：干净范围(0) / 打码两半 / 词表层 / 二进制跳过 / 已推的不在范围(0) /
-  上游解析不到(2) / 词表读不到(2)。`verify/falsify_history_gate.py` 再对本闸注入三处失能变异，
-  自证必须跟着红（按**用例名**核对红在对的那一道，只数 rc 会把模块崩了当成抓到了）。
+Can the checks produce a negative result?
+  `verify/selftest_history_gate.py` builds its own local bare repo in temp and stages real
+  states; the core case is "a middle commit introduces a dirty blob, a later commit deletes
+  it": **on the same fixture leakscan (tree) must be rc=0 while this gate must be rc=1** --
+  that is the reason this gate exists. Also: clean range (0) / both halves of masking / the
+  term-list layer / binary skip / already-pushed out of range (0) / upstream unresolvable (2) /
+  term list unreadable (2). `verify/falsify_history_gate.py` then injects three disabling
+  mutations into this gate and the self-test must go red with them (checked by **case name**,
+  so that a crash of the module is not mistaken for a catch, which counting rc alone would do).
 
-退出码
-  PASS=0 / FAIL=1 / UNDECIDABLE=2 / ERROR=3。FAIL 优先于 UNDECIDABLE。
-  「找不到 git」「不是 git 仓」「解析不到上游」「词表读不到」一律 UNDECIDABLE —— 查不到 ≠ 干净。
+Exit codes
+  PASS=0 / FAIL=1 / UNDECIDABLE=2 / ERROR=3. FAIL takes priority over UNDECIDABLE.
+  "no git found" / "not a git repo" / "upstream unresolvable" / "term list unreadable" are all
+  UNDECIDABLE -- could not check is not the same as clean.
 """
 import argparse
 import os
@@ -51,10 +67,11 @@ PASS, FAIL, UNDECIDABLE, ERROR = 0, 1, 2, 3
 
 
 def disp(path, root):
-    """输出里只留相对路径 / 末段。本闸的 stdout 是**发布面**：
-    绝对路径不进输出 —— 这条规矩对写闸的人同样成立。"""
+    """Keep only a relative path / last segment in the output. This gate's stdout is a
+    **published surface**: an absolute path must not enter the output -- a rule that holds
+    for the people who write the gates too."""
     if not path:
-        return "(默认)"
+        return "(default)"
     try:
         r = os.path.relpath(path, root)
         if not r.startswith(".."):
@@ -65,18 +82,20 @@ def disp(path, root):
 
 
 def mask(sample):
-    """命中样本的打码形态：只说它多长，不说它是什么。"""
+    """The masked form of a hit sample: state its length, not its content."""
     return "<<masked len=%d>>" % len(sample or "")
 
 
 def run_git(gitp, repo, args, timeout=180):
-    """一次普通的 git 调用。cron 无 PATH，故 gitp 必须是显式路径（见 pushscope_gate.find_git）。"""
+    """A plain git call. cron has no PATH, so gitp must be an explicit path (see
+    pushscope_gate.find_git)."""
     return subprocess.run([gitp, "-C", repo] + args, capture_output=True, timeout=timeout,
                           text=True, encoding="utf-8", errors="replace")
 
 
 def list_range_objects(gitp, repo, ref, timeout=180):
-    """→ (items, err)。items = [(sha, path)]；path 可能为空串。err 非空 = 取不到（不是「没有」）。"""
+    """-> (items, err). items = [(sha, path)]; path may be empty. A non-empty err means it
+    could not be read (not "there are none")."""
     r = run_git(gitp, repo, ["rev-list", "--objects", "%s..HEAD" % ref], timeout=timeout)
     if r.returncode != 0:
         return None, (r.stderr or "")[-300:]
@@ -91,7 +110,7 @@ def list_range_objects(gitp, repo, ref, timeout=180):
 
 
 def batch_types(gitp, repo, shas, timeout=180):
-    """→ {sha: type}。用一次 --batch-check 取类型，不逐个起进程。"""
+    """-> {sha: type}. One --batch-check call to get types, no per-object process."""
     if not shas:
         return {}
     inp = ("\n".join(shas) + "\n").encode("ascii")
@@ -106,7 +125,8 @@ def batch_types(gitp, repo, shas, timeout=180):
 
 
 def read_blobs(gitp, repo, shas, timeout=300):
-    """→ [(sha, bytes)]。只喂 --batch-check 已确认是 blob 的 sha（否则流解析会错位）。"""
+    """-> [(sha, bytes)]. Feed only shas already confirmed to be blobs by --batch-check
+    (otherwise the stream parsing goes out of step)."""
     if not shas:
         return []
     inp = ("\n".join(shas) + "\n").encode("ascii")
@@ -119,7 +139,7 @@ def read_blobs(gitp, repo, shas, timeout=300):
             break
         parts = out[i:j].decode("utf-8", "replace").split()
         if len(parts) < 3:
-            i = j + 1                      # 「<sha> missing」这类没有 body 的行
+            i = j + 1                      # lines such as "<sha> missing" have no body
             continue
         try:
             size = int(parts[2])
@@ -132,7 +152,8 @@ def read_blobs(gitp, repo, shas, timeout=300):
 
 
 def head_tree_blobs(gitp, repo, timeout=180):
-    """HEAD 树里的 blob 集合 —— 用来算 novel（只存在于中间提交的那些）。"""
+    """The set of blobs in the HEAD tree -- used to compute novel (those that exist only in a
+    middle commit)."""
     r = run_git(gitp, repo, ["ls-tree", "-r", "HEAD"], timeout=timeout)
     s = set()
     for line in (r.stdout or "").splitlines():
@@ -143,7 +164,8 @@ def head_tree_blobs(gitp, repo, timeout=180):
 
 
 def commits_touching(gitp, repo, ref, sha, timeout=120):
-    """→ 该对象（增或删）出现在范围里的提交短 sha 列表（最多 8 个）。取不到就返回 []，不猜。"""
+    """-> the short shas of commits in range that touch this object (add or delete), at most 8.
+    Returns [] if it cannot be read; it does not guess."""
     r = run_git(gitp, repo, ["log", "--format=%h", "--find-object=%s" % sha, "%s..HEAD" % ref],
                 timeout=timeout)
     if r.returncode != 0:
@@ -153,10 +175,10 @@ def commits_touching(gitp, repo, ref, sha, timeout=120):
 
 def scan_history(repo, upstream=None, terms_path=None, terms_required=True,
                  show_samples=False, gitp=None):
-    """进程内可调用（自证与 the export step 都走这里 —— cron 无 PATH，少一个静默失效的环节）。
-    → (rc, lines)"""
+    """Callable in-process (the self-test and the export step both go through here -- cron has
+    no PATH, so one less silently-failing link). -> (rc, lines)"""
     repo = os.path.abspath(repo)
-    tag = "history repo=…%s" % os.path.basename(repo)
+    tag = "history repo=...%s" % os.path.basename(repo)
     if terms_path is None:
         terms_path = os.path.join(repo, "_local", "privterms.txt")
     sys.path.insert(0, HERE)
@@ -166,23 +188,23 @@ def scan_history(repo, upstream=None, terms_path=None, terms_required=True,
     gitp = gitp or PG.find_git()
     if not gitp:
         return UNDECIDABLE, [tag,
-                             "  UNDECIDABLE：找不到 git（cron 无 PATH）—— 没查 ≠ 干净",
+                             "  UNDECIDABLE: no git found (cron has no PATH) -- not checked is not clean",
                              "SUMMARY upstream=- commits=? blobs=? LEAKS=? rc=%d" % UNDECIDABLE]
     if not os.path.isdir(os.path.join(repo, ".git")):
         return UNDECIDABLE, [tag,
-                             "  UNDECIDABLE：这不是 git 仓（没有 .git）—— 取不到「这次会传哪些对象」",
+                             "  UNDECIDABLE: this is not a git repo (no .git) -- cannot tell which objects this push would send",
                              "SUMMARY upstream=- commits=? blobs=? LEAKS=? rc=%d" % UNDECIDABLE]
 
     ref, ustat, uwhy = PG.resolve_upstream(gitp, repo, upstream)
-    lines = ["%s 上游=%s 范围=%s..HEAD" % (tag, ref or "(无)", ref or "(无)")]
+    lines = ["%s upstream=%s range=%s..HEAD" % (tag, ref or "(none)", ref or "(none)")]
     if ustat != "OK":
-        lines.append("  UNDECIDABLE：%s" % uwhy)
+        lines.append("  UNDECIDABLE: %s" % uwhy)
         lines.append("SUMMARY upstream=%s commits=? blobs=? LEAKS=? rc=%d" % (ref or "-", UNDECIDABLE))
         return UNDECIDABLE, lines
 
     items, err = list_range_objects(gitp, repo, ref)
     if items is None:
-        lines.append("  UNDECIDABLE：git rev-list --objects %s..HEAD 取不到：%s" % (ref, err))
+        lines.append("  UNDECIDABLE: git rev-list --objects %s..HEAD failed: %s" % (ref, err))
         lines.append("SUMMARY upstream=%s commits=? blobs=? LEAKS=? rc=%d" % (ref, UNDECIDABLE))
         return UNDECIDABLE, lines
 
@@ -213,7 +235,7 @@ def scan_history(repo, upstream=None, terms_path=None, terms_required=True,
             for m in LS.term_re(t).finditer(text):
                 found.append((LS.TERM_RULE, m.group(0)))
         rel = (paths.get(sha, "") or "").replace("\\", "/")
-        cleared = LS.ALLOW.get(rel, {})          # 与树闸同一份豁免（理由缺一不可）
+        cleared = LS.ALLOW.get(rel, {})          # the same exemptions as the tree gate
         for rule, sample in found:
             k = (rule, LS.norm(sample))
             if k in seen:
@@ -229,31 +251,31 @@ def scan_history(repo, upstream=None, terms_path=None, terms_required=True,
     for sha, path, rule, sample in hits:
         shown = sample[:60] if show_samples else mask(sample)
         who = ",".join(commits_touching(gitp, repo, ref, sha))
-        where = "  [只在中间提交里 · 树闸看不见]" if sha in novel_set else "  [也在 HEAD 树里]"
+        where = "  [only in a middle commit - invisible to the tree gate]" if sha in novel_set else "  [also in the HEAD tree]"
         lines.append("  LEAK   blob %s %s: %s -> %s%s%s"
-                     % (sha[:12], path or "(无路径)", rule, shown, where,
-                        ("  涉及提交=%s" % who) if who else ""))
+                     % (sha[:12], path or "(no path)", rule, shown, where,
+                        ("  touched by=%s" % who) if who else ""))
 
     sh = [h for h in hits if h[2] in LS.SHAPE_RULES]
     lt = [h for h in hits if h[2] == LS.TERM_RULE]
-    lines.append("B0 范围       commits=%d objects=%d blobs=%d（只存在于中间提交的 %d）"
+    lines.append("B0 range      commits=%d objects=%d blobs=%d (only-in-middle-commit: %d)"
                  % (n_commits, len(shas), len(blob_shas), len(novel)))
-    lines.append("B1 对象内容 形状层  blobs=%d rules=%d hits=%d 豁免=%d  %s"
+    lines.append("B1 object content shape layer  blobs=%d rules=%d hits=%d exempt=%d  %s"
                  % (scanned, len(LS.SHAPES), len(sh), len(allowed), "FAIL" if sh else "PASS"))
     if tstat == "SKIPPED":
-        lines.append("B2 对象内容 字面层  **未跑**（terms_required=False）："
-                     "本次运行的绿**不证明**字面词那一半")
+        lines.append("B2 object content literal layer  **NOT RUN** (terms_required=False): "
+                     "this run's green does **not prove** the literal-term half")
     elif tstat == "MISSING":
-        lines.append("B2 对象内容 字面层  词表读不到（%s）→ UNDECIDABLE，不猜成 PASS"
+        lines.append("B2 object content literal layer  terms unreadable (%s) -> UNDECIDABLE, not guessed as PASS"
                      % disp(terms_path, repo))
     else:
-        lines.append("B2 对象内容 字面层  terms=%d hits=%d  %s"
+        lines.append("B2 object content literal layer  terms=%d hits=%d  %s"
                      % (len(terms), len(lt), "FAIL" if lt else "PASS"))
     if binary:
-        lines.append("  注：跳过二进制 blob %d 个（本工具不判二进制里嵌的信息）" % binary)
+        lines.append("  note: skipped %d binary blob(s) (this tool does not inspect data embedded in binaries)" % binary)
     if hits and not show_samples:
-        lines.append("  注：命中样本默认打码（只给长度）—— 本闸的输出会被折进下一条提交信息"
-                     "。要看字面：git cat-file blob <sha>。")
+        lines.append("  note: hit samples are masked by default (length only) -- this gate's output is"
+                     " folded into the next commit message. To see the literal: git cat-file blob <sha>.")
 
     if hits:
         rc = FAIL
@@ -267,17 +289,17 @@ def scan_history(repo, upstream=None, terms_path=None, terms_required=True,
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="待推范围内对象内容的隐私闸（树之外、信息之外的第三样）")
-    ap.add_argument("--repo", default=REPO, help="被查的仓（默认 = 本脚本所在仓）")
+    ap = argparse.ArgumentParser(description="Privacy gate for the object content of the range about to be pushed (the third thing, beyond tree and messages)")
+    ap.add_argument("--repo", default=REPO, help="the repo to scan (default = the repo this script lives in)")
     ap.add_argument("--upstream", default=None,
-                    help="上游 ref（默认 @{u}，再退 origin/main、origin/master）")
+                    help="upstream ref (default @{u}, then falling back to origin/main, origin/master)")
     ap.add_argument("--terms", default=None,
-                    help="词表路径。默认 <repo>/_local/privterms.txt（gitignore）")
+                    help="term list path. Default <repo>/_local/privterms.txt (gitignored)")
     ap.add_argument("--shape-only", action="store_true",
-                    help="只跑形状层（干净 clone 用；输出会明写「字面层未跑」）")
+                    help="shape layer only (for a clean clone; the output states 'literal layer not run')")
     ap.add_argument("--show-samples", action="store_true",
-                    help="回显命中字面：**只在输出不进任何发布面时用**")
-    ap.add_argument("--git", default=None, help="git 可执行文件路径（cron 无 PATH）")
+                    help="echo the hit literals: **only when the output reaches no publishing surface**")
+    ap.add_argument("--git", default=None, help="git executable path (cron has no PATH)")
     a = ap.parse_args(argv)
     try:
         rc, lines = scan_history(a.repo, upstream=a.upstream, terms_path=a.terms,

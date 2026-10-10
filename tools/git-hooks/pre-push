@@ -1,19 +1,23 @@
 #!/bin/sh
-# pre-push —— 手动 push 路径上的隐私闸（**模板**：要改请改 tools/git-hooks/pre-push 再重装）
+# pre-push -- privacy gate on the manual push path (**template**: to change it, edit
+# tools/git-hooks/pre-push and reinstall)
 #
-# 装：python tools/install_git_hooks.py          （幂等；写 .git/hooks/pre-push + 两个 sidecar）
-# 证：python tools/install_git_hooks.py --check  （装的那份与模板逐字节相同；core.hooksPath 没被改指）
-# 测：python verify/selftest_prepush_hook.py     （9 条夹具用例，含 --no-verify 旁路实测）
+# Install: python tools/install_git_hooks.py          (idempotent; writes .git/hooks/pre-push + two sidecars)
+# Verify:  python tools/install_git_hooks.py --check  (the installed copy is byte-identical to the template; core.hooksPath was not redirected)
+# Test:    python verify/selftest_prepush_hook.py     (9 fixture cases, including a measured --no-verify bypass)
 #
-# 为什么：自动导出 job 的出口有闸（the export step），但**手动** `git commit && git push`
-# 这条路上原先一条闸都没有 —— 实测那次泄漏正是手动提交进去的。
+# Why: the automatic export job's exit has a gate (the export step), but the **manual**
+# `git commit && git push` path previously had no gate at all -- the measured leak came in
+# through exactly this manual commit.
 #
-# 判据：树（leakscan）+ 待推提交信息（pushscope_gate）+ 待推范围内的对象内容（history_gate），
-# 走 verify/prepush_gate.py。任一非 0（含 UNDECIDABLE=2）= 拒绝本次 push。
-# 本地提交不受影响：停是可逆的，发布不是。
+# Check: tree (leakscan) + messages about to be pushed (pushscope_gate) + object content in the
+# range about to be pushed (history_gate), via verify/prepush_gate.py. Any non-zero (including
+# UNDECIDABLE=2) = refuse this push.
+# Local commits are unaffected: stopping is reversible, publishing is not.
 #
-# 边界：`git push --no-verify` 直接绕过（自证里有一条用例专门测它）；.git/hooks/ 不进版本控制，
-# 别的 clone 上没有这道闸。全程只用 shell 内建命令定位 —— cron 服务没有 PATH。
+# Limit: `git push --no-verify` bypasses it outright (one self-test case measures exactly that);
+# .git/hooks/ is not version-controlled, so other clones do not have this gate. Everything is
+# located with shell builtins only -- the cron service has no PATH.
 set -u
 
 case "$0" in
@@ -21,12 +25,14 @@ case "$0" in
   *)   hook_dir=. ;;
 esac
 hook_dir=$(cd "$hook_dir" 2>/dev/null && pwd) || exit 1
-# 传给**原生** python 的 argv 必须是原生路径：MSYS 形态（斜杠打头那种）一旦进原生进程会被
-# 重新解释 —— 实测踩到：闸报「can't open file 临时目录下的 prepush_gate.py」，也就是临时目录
-# 被拼到了当前盘符根下（第一次自证就是被这一条挡下的）。所以对 shell 的文件测试用 MSYS 形态，
-# 对 python 的 argv 用 pwd -W 的原生形态；Linux 上没有 pwd -W，退回 POSIX 形态（那边的 POSIX
-# 路径本来就是原生的）。注：下面这些形状描述**不写样本本身** —— 本文件也在这道闸的扫描面里
-# 。
+# The argv handed to **native** python must be a native path: an MSYS form (the kind starting
+# with a slash) is re-interpreted once it reaches a native process -- measured: the gate reported
+# "can't open file ...prepush_gate.py" under a temp dir, i.e. the temp dir had been glued under
+# the current drive root (the first self-test run was stopped by exactly this). So use the MSYS
+# form for the shell's file tests and `pwd -W`'s native form for python's argv; there is no
+# `pwd -W` on Linux, so fall back to the POSIX form (there the POSIX path is already native).
+# Note: the descriptions below **do not write the sample itself** -- this file is inside this
+# gate's own scan surface too.
 base=$(cd "$hook_dir/../.." 2>/dev/null && pwd) || exit 1
 repo_sh="$base"
 repo=$(cd "$base" && pwd -W 2>/dev/null) || repo=""
@@ -36,11 +42,11 @@ gate_sh="$repo_sh/verify/prepush_gate.py"
 
 refuse() {
   echo "pre-push REFUSED: $1" >&2
-  echo "  （fail-closed：闸没跑 / 非 0 一律不放行；本地提交未受影响。）" >&2
+  echo "  (fail-closed: the gate did not run / returned non-zero, so nothing is let through; local commits are unaffected.)" >&2
   exit 1
 }
 
-[ -f "$gate_sh" ] || refuse "找不到闸 $gate_sh"
+[ -f "$gate_sh" ] || refuse "gate not found at $gate_sh"
 
 py=""
 if [ -f "$hook_dir/pre-push.python" ]; then
@@ -53,7 +59,7 @@ if [ -z "$py" ]; then
     if [ -n "$p" ]; then py="$p"; break; fi
   done
 fi
-[ -n "$py" ] || refuse "找不到 python 解释器（cron 无 PATH）—— 用任意 python 跑一次 tools/install_git_hooks.py 写 sidecar"
+[ -n "$py" ] || refuse "no python interpreter found (cron has no PATH) -- run tools/install_git_hooks.py once with any python to write the sidecar"
 
 gb=""
 if [ -f "$hook_dir/pre-push.git" ]; then
@@ -79,5 +85,5 @@ while read -r lref lsha rref rsha; do
     fi
   fi
 done
-[ "$rc" -eq 0 ] || refuse "隐私闸非 0（上面每行 [gate] / LEAK 就是判据输出）"
+[ "$rc" -eq 0 ] || refuse "privacy gate returned non-zero (every [gate] / LEAK line above is the check output)"
 exit 0

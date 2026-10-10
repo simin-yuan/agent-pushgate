@@ -1,35 +1,44 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""prepush_gate.py — 手动 push 路径上的那道闸（发布前隐私闸的第三个入口）
+"""prepush_gate.py -- the gate on the manual push path (the third entrance to the pre-publish
+privacy gate)
 
-用法
+Usage
     python verify/prepush_gate.py [--repo R] [--upstream REF] [--terms FILE]
                                   [--git GIT] [--quiet] [--no-log]
 
-退出码 PASS=0 / FAIL=1 / UNDECIDABLE=2 / ERROR=3（FAIL 优先于 UNDECIDABLE）。
+Exit code PASS=0 / FAIL=1 / UNDECIDABLE=2 / ERROR=3 (FAIL takes priority over UNDECIDABLE).
 
-为什么有它
-  发布路径有两条，闸原先只盖住一条：
-    ① 自动export job —— the export step 出口处进程内调三闸（fail-closed）；
-    ② **手动** `git commit && git push` —— 一条闸都没有。实测那次泄漏
-       正是手动提交进去的。
-  本文件是 ② 的闸体，被 .git/hooks/pre-push 调用（经 tools/install_git_hooks.py 安装）。
-  判据与 ① **共用同一批函数**（leakscan / pushscope_gate / history_gate），不另写一套 ——
-  同一件事两个入口，不是两套标准。
+Why it exists
+  There are two publishing paths and the gate used to cover only one:
+    1. the automatic export job -- the export step calls the three gates in-process at the exit
+       (fail-closed);
+    2. **manual** `git commit && git push` -- which had no gate at all. The measured leak came
+       in through exactly a manual commit.
+  This file is the gate body for (2), called by .git/hooks/pre-push (installed via
+  tools/install_git_hooks.py). Its checks **share the very same functions** as (1) (leakscan /
+  pushscope_gate / history_gate) rather than being written a second time -- one thing, two
+  entrances, not two standards.
 
-范围 —— 本闸**不包含**什么（缺这一节，判据会被当成它撑不住的东西）
-  · 只在装了 hook 的本机克隆上生效。`git push --no-verify` 绕过；自证
-    （verify/selftest_prepush_hook.py）里有一条用例**专门把这个洞测出来**，不假装它不存在。
-    别的机器 / CI 上没有这道闸。
-  · 只盖 git 这一条出口。别的出口（chat / X / 邮件 / 网页表单）不在这里。
-  · 取不到基（新分支首推、本地没有 remote-tracking ref）→ UNDECIDABLE=2 → 拒绝，
-    不猜成干净。这是 fail-closed 的代价，写在明面上。
-  · 不判二进制里嵌的信息、不判语义换写法（同 leakscan 的边界面）。
+Scope -- what this gate does **not** cover (without this section the checks get treated as
+something they cannot support)
+  - It only takes effect on the local clones where the hook is installed. `git push --no-verify`
+    bypasses it; the self-test (verify/selftest_prepush_hook.py) has a case that **measures this
+    hole on purpose**, rather than pretending it does not exist. Other machines / CI have no
+    such gate.
+  - It covers only the git exit. Other exits (chat / X / email / web forms) are not here.
+  - If the base cannot be taken (first push of a new branch, no local remote-tracking ref) ->
+    UNDECIDABLE=2 -> refuse, and it is not guessed as clean. That is the price of fail-closed,
+    stated in the open.
+  - It does not judge information embedded in binaries and does not judge semantic re-spellings
+    (the same blind spot as leakscan).
 
-判据能否给出否定结果
-  能。自证给 9 条真实 push（干净 / 树脏 / 信息脏 / 词表缺 / 无 PATH / 无 PATH 且无 sidecar /
-  --no-verify 旁路 / hook 被改 / core.hooksPath 被改指），每条只认「远端 ref 动没动 + 留痕
-  日志」两样硬证据。verify/falsify_prepush_hook.py 再把三个部件各改坏一次，自证必须跟着红。
+Can the checks produce a negative result?
+  Yes. The self-test runs 9 real pushes (clean / dirty tree / dirty message / missing term list /
+  no PATH / no PATH and no sidecar / --no-verify bypass / tampered hook / redirected
+  core.hooksPath), and for each it only accepts two pieces of hard evidence: did the remote ref
+  move, and what is in the trace log. verify/falsify_prepush_hook.py then breaks each of the
+  three parts once, and the self-test must go red with it.
 """
 import argparse
 import os
@@ -44,7 +53,8 @@ CST = timezone(timedelta(hours=8))
 
 
 def run(repo, upstream=None, terms_path=None, gitp=None):
-    """进程内调三闸（cron 无 PATH，少一个静默失效的环节）→ (rc, lines)"""
+    """Call the three gates in-process (cron has no PATH, so one less silently-failing link)
+    -> (rc, lines)"""
     repo = os.path.abspath(repo)
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
@@ -52,8 +62,8 @@ def run(repo, upstream=None, terms_path=None, gitp=None):
     import pushscope_gate
     import history_gate
 
-    lines = ["prepush_gate repo=…%s 基=%s（= 本次 push 实际发送的范围）"
-             % (os.path.basename(repo), upstream or "(自动：@{u} / origin/main)")]
+    lines = ["prepush_gate repo=...%s base=%s (= the range this push actually sends)"
+             % (os.path.basename(repo), upstream or "(auto: @{u} / origin/main)")]
     trc, tl = leakscan.scan(repo, terms_path=terms_path)
     mrc, ml = pushscope_gate.scan_messages(repo, upstream=upstream, terms_path=terms_path, gitp=gitp)
     hrc, hl = history_gate.scan_history(repo, upstream=upstream, terms_path=terms_path, gitp=gitp)
@@ -74,11 +84,12 @@ def run(repo, upstream=None, terms_path=None, gitp=None):
 
 
 def write_log(repo, rc, base):
-    """留痕（.git/prepush_gate.log）：闸跑过没有、结论是什么。
+    """Trace (.git/prepush_gate.log): did the gate run, and what was the verdict.
 
-    只写结论与基的前 12 位 —— 命中样本是发布面材料，不进这里。
-    这一行是「闸在 push 真的跑了」的**外部痕迹**：没有它，一次 --no-verify 旁路和
-    「闸放行了」长得一模一样。
+    Writes only the verdict and the first 12 chars of the base -- hit samples are publishing-
+    surface material and do not go in here. This line is the **external trace** that "the gate
+    really ran on this push": without it, a `--no-verify` bypass and "the gate let it through"
+    look exactly alike.
     """
     p = os.path.join(repo, ".git", "prepush_gate.log")
     if not os.path.isdir(os.path.dirname(p)):
@@ -90,14 +101,14 @@ def write_log(repo, rc, base):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="手动 push 路径上的隐私闸（树 + 提交信息 + 待推对象）")
-    ap.add_argument("--repo", default=REPO, help="被查的仓（默认 = 本脚本所在仓）")
+    ap = argparse.ArgumentParser(description="Privacy gate on the manual push path (tree + commit messages + objects about to be pushed)")
+    ap.add_argument("--repo", default=REPO, help="the repo to scan (default = the repo this script lives in)")
     ap.add_argument("--upstream", default=None,
-                    help="本次推送的基（pre-push stdin 给的远端 sha）。缺省 = 自动找 @{u} / origin/main")
-    ap.add_argument("--terms", default=None, help="词表路径（默认 <repo>/_local/privterms.txt）")
-    ap.add_argument("--git", default=None, help="git 可执行文件（cron 无 PATH；hook 从 sidecar 传）")
-    ap.add_argument("--quiet", action="store_true", help="只打最后一行结论")
-    ap.add_argument("--no-log", action="store_true", help="不写 .git/prepush_gate.log")
+                    help="the base of this push (the remote sha given on pre-push stdin). Default = auto: @{u} / origin/main")
+    ap.add_argument("--terms", default=None, help="term list path (default <repo>/_local/privterms.txt)")
+    ap.add_argument("--git", default=None, help="git executable (cron has no PATH; the hook passes it from the sidecar)")
+    ap.add_argument("--quiet", action="store_true", help="print only the final verdict line")
+    ap.add_argument("--no-log", action="store_true", help="do not write .git/prepush_gate.log")
     a = ap.parse_args(argv)
     try:
         rc, lines = run(a.repo, upstream=a.upstream, terms_path=a.terms, gitp=a.git)

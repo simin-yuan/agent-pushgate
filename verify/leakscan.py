@@ -1,41 +1,57 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""leakscan.py — 公开仓隐私闸：把「机器路径 / 操作者字面词」挡在 push 之前
+"""leakscan.py -- public-repo privacy gate: keep "machine paths / operator literal terms"
+out of the tree before a push.
 
-用法
+Usage
     python verify/leakscan.py [repo_root] [--terms FILE] [--shape-only] [--explain]
-    默认 root = 本仓根，默认词表 = <root>/_local/privterms.txt。
-    导出前跑一次、CI 跑一次（CI 只能是 --shape-only，理由见下）。
+    Default root = this repo, default term list = <root>/_local/privterms.txt.
+    Run once before export and once in CI (CI can only use --shape-only; see below).
 
-判什么
-  L1 形状层（不需配置，任何机器上都能跑）
-     S1-drive-path        盘符绝对路径（字母 + 冒号 + 斜杠开头）。冒号前必须是词边界，
-                          所以 URL 里的协议分隔不算。
-     S2-unc-path          双反斜杠开头的网络路径（主机 + 共享 + 至少一段）。
-     S3-profile-internal  用户配置内部路径（AppData 的 Local / Roaming 段）。
-  L2 字面层（需词表）
-     操作者私有字面词（真名 / 私有目录名 / 主机名 / 机构名），一行一个，`#` 起注释，
-     大小写不敏感、按词边界匹配。默认词表 `_local/privterms.txt`，而 `_local/` 在
-     .gitignore 里，**不进公开仓** —— 把词表提交进仓 = 把要挡的词自己公开一次，自毁。
+What it checks
+  L1 shape layer (no configuration; runs on any machine)
+     S1-drive-path        drive-absolute path (letter + colon + slash). The colon must sit
+                          on a word boundary, so a URL scheme separator does not count.
+     S2-unc-path          network path starting with a double backslash (host + share +
+                          at least one segment).
+     S3-profile-internal  path inside a user profile (the Local / Roaming segment of
+                          AppData).
+  L2 literal layer (needs a term list)
+     Operator-private literal terms (real name / private directory names / hostnames /
+     organisation names), one per line, `#` starts a comment, case-insensitive, matched on
+     word boundaries. Default list `_local/privterms.txt`, and `_local/` is in .gitignore,
+     so it **never reaches the public repo** -- committing the term list into the repo means
+     publishing, once, the very terms you are trying to block: self-defeating.
 
-范围 —— 本工具**不包含**什么（缺这一节，判据就会被当成它撑不住的东西）
-  · L1 只认**形状**，不认语义。合成占位路径与真实机器路径同形，只能靠 ALLOW 逐条豁免；
-    豁免必须写明理由 —— 无理由的豁免就是真泄漏的长期白名单。
-  · L1 **抓不到**不带路径的纯字面人名（正文里的「须 <名> 批」），那归 L2。
-  · L2 依赖本地词表。CI 在干净 clone 上没有 `_local/`，故 CI 用 `--shape-only` 只跑形状层，
-    输出里会打印「L2 未跑」：**CI 的绿不证明字面层干净**。把词表送进 CI 需要 Actions
-    secret，那是对外配置变更，须由仓库所有者决定（未做）。
-  · 只扫文本：不判图片/二进制里嵌的信息，不判语义换写法（同音、拼音、缩写、拆分拼接）。
-  · 不判「这段话该不该公开」，只判它有没有带上不该带的**标识串**。
+Scope -- what this tool does **not** cover (without this section the checks get treated as
+something they cannot support)
+  - L1 only recognises **shape**, not meaning. A synthetic placeholder path has the same
+    shape as a real machine path and can only be cleared item by item via ALLOW; every
+    exemption must state a reason -- a reason-less exemption is a long-term allowlist for a
+    real leak.
+  - L1 **cannot catch** a bare literal name with no path around it (a line of prose such as
+    "must be approved by <name>"); that is L2's job.
+  - L2 depends on a local term list. In CI, on a clean clone, there is no `_local/`, so CI
+    runs `--shape-only` and only exercises the shape layer; the output states "L2 not run":
+    **a green CI does not prove the literal layer is clean**. Feeding the term list into CI
+    needs an Actions secret, which is an outward-facing configuration change and must be
+    decided by the repository owner (not done).
+  - Text only: it does not inspect information embedded in images or binaries, and it does
+    not catch semantic re-spellings (homophones, transliteration, abbreviations, splitting
+    and concatenation).
+  - It does not judge whether a passage *should* be public, only whether it carries an
+    identifier string that should not be.
 
-判据能否给出否定结果
-  能。`selftest_leakscan.py` 给 S1/S2/S3/L2 各注入一个坏样本（各自必须红）、一个**自造**的
-  干净对照（必须绿）、一个 URL 误报对照（不许红）、缺词表（必须 UNDECIDABLE 而非 PASS）、
-  以及豁免机制的两半（无豁免红 / 有豁免绿）。`the mutation (falsify) test` 再把本闸改坏一次（强制 rc=0）
-  → 自证必须跟着红：打不红的检查是装饰。
+Can the checks produce a negative result?
+  Yes. `selftest_leakscan.py` injects one bad sample per rule S1/S2/S3/L2 (each must go
+  red), one **hand-made** clean control (must stay green), one URL false-positive control
+  (must not go red), a missing term list (must be UNDECIDABLE, not PASS), and both halves of
+  the exemption mechanism (no exemption -> red / exemption -> green). `the mutation
+  (falsify) test` then breaks this gate once (forcing rc=0) -> the self-test must go red with
+  it: a check you cannot make fail is decoration.
 
-退出码
-  PASS=0 / FAIL=1 / UNDECIDABLE=2 / ERROR=3。FAIL 优先于 UNDECIDABLE。
+Exit codes
+  PASS=0 / FAIL=1 / UNDECIDABLE=2 / ERROR=3. FAIL takes priority over UNDECIDABLE.
 """
 import argparse
 import os
@@ -45,29 +61,37 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, os.pardir))
 
-# `_local/` 装的是本机私有接线与词表本身 —— 扫它就等于扫自己的禁词表。
+# `_local/` holds this machine's private wiring and the term list itself -- scanning it would
+# mean scanning your own blocklist.
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "build", "dist", "_local"}
 
 SHAPES = [
-    # 冒号前的负向后顾排除 URL 协议分隔（…ps://…）：盘符前不会是字母数字。
-    ("S1-drive-path", re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s`\"'（）()；;，,]+")),
-    ("S2-unc-path", re.compile(r"\\\\[^\s\\/`\"'（）()；;，,]{1,24}[\\/][^\s`\"'（）()；;，,]+")),
+    # The negative lookbehind before the colon excludes URL scheme separators (...ps://...):
+    # a drive letter is never preceded by an alphanumeric.
+    ("S1-drive-path", re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s`\"'()\uff08\uff09;\uff1b,\uff0c]+")),
+    ("S2-unc-path", re.compile(r"\\\\[^\s\\/`\"'()\uff08\uff09;\uff1b,\uff0c]{1,24}[\\/][^\s`\"'()\uff08\uff09;\uff1b,\uff0c]+")),
     ("S3-profile-internal", re.compile(r"AppData[\\/](?:Local|Roaming)[\\/]", re.I)),
 ]
 
-#: 逐条审过、写明理由的豁免。键 = 仓库相对路径，值 = {归一化后的命中串: 理由}。
-#: 命中串 `*` 表示该文件整体豁免。**不给「按理由省略」的捷径**：理由缺失就写不出来。
+#: Exemptions, each reviewed individually with a written reason.
+#: key = repo-relative path, value = {normalised match: reason}.
+#: A match of `*` exempts the whole file. There is **no "omit for a reason" shortcut**:
+#: a missing reason simply cannot be written.
 ALLOW = {
-    # 本文件是所有形状规则的源码；正则源码里必然出现被禁形态的片段。
-    # 不豁免它，它就检测不了任何东西（同 any leak scanner's own source 的豁免理由）。
-    "verify/leakscan.py": {"*": "形状规则的源码，天然含被禁形态的片段"},
-    # 同理：坏样本必须住在自证里，否则「它会不会红」无从证明。
-    "verify/selftest_leakscan.py": {"*": "自证里故意注入的坏样本"},
+    # This file is the source of every shape rule; its own regex source necessarily contains
+    # fragments of the forbidden shapes.
+    # Without exempting it, it could detect nothing (same reason as any leak scanner's own source).
+    "verify/leakscan.py": {"*": "source of the shape rules, inherently contains forbidden-shape fragments"},
+    # Likewise: the bad samples must live inside the self-test, otherwise
+    # "does it go red?" is unprovable.
+    "verify/selftest_leakscan.py": {"*": "bad samples deliberately injected in the self-test"},
     "verify/selftest_ledger_discipline.py": {
-        "e:/x/y/z.md": "用例 J 的合成占位路径（非真机路径）",
-        # 同一份占位路径的 JSON 转义形态（双反斜杠写法）会**顺带**命中 UNC 规则 —— 是转义串
-        # 长得像 UNC，不是真 UNC。规则不为此收窄（收窄 = 缩小检测面），改用逐条豁免把它留在明面上。
-        "/x/y/z.md": "同一占位路径的转义形态（归一后前导斜杠只剩一个），S2 在转义串上也会命中",
+        "e:/x/y/z.md": "synthetic placeholder path for case J (not a real machine path)",
+        # The JSON-escaped form of the same placeholder path (double backslash) **also**
+        # hits the UNC rule -- an escaped string that merely looks like a UNC path, not a
+        # real one. The rule is not narrowed for this (narrowing = shrinking the detection
+        # surface); instead a per-item exemption keeps it out in the open.
+        "/x/y/z.md": "escaped form of the same placeholder (one leading slash remains after normalisation); S2 also hits the escaped string",
     },
 }
 
@@ -76,15 +100,17 @@ TERM_RULE = "L2-term"
 
 
 def norm(s):
-    """命中串归一：斜杠折叠、去空白、小写 —— 好让 `E:\\\\x` 与 `E:/x` 对上同一条豁免。"""
+    """Normalise a match: fold slashes, strip whitespace, lowercase -- so that `E:\\\\x` and
+    `E:/x` map to the same exemption entry."""
     return re.sub(r"[\\/]+", "/", s or "").strip().lower()
 
 
 def _rel(p, root):
-    """输出里只留相对路径 / 末段。本闸的 stdout 是**发布面**：
-    the export step 会把它折进下一条提交信息，所以它自己不许带机器绝对路径。"""
+    """Keep only a relative path / last segment in the output. This gate's stdout is a
+    **published surface**: the export step folds it into the next commit message, so it must
+    not itself carry a machine-absolute path."""
     if not p:
-        return "(默认)"
+        return "(default)"
     try:
         r = os.path.relpath(p, root)
         if not r.startswith(".."):
@@ -95,7 +121,7 @@ def _rel(p, root):
 
 
 def load_terms(path):
-    """→ (terms, status)。status: RAN（读到词表，哪怕是空的）/ MISSING（读不到）。"""
+    """-> (terms, status). status: RAN (list read, even if empty) / MISSING (unreadable)."""
     if not path or not os.path.isfile(path):
         return [], "MISSING"
     terms = []
@@ -108,7 +134,8 @@ def load_terms(path):
 
 
 def term_re(term):
-    """大小写不敏感 + 词边界。CJK 词天然落在 [A-Za-z0-9] 之外，同样按子串命中。"""
+    """Case-insensitive + word boundary. Non-ASCII terms fall naturally outside [A-Za-z0-9],
+    so they still match as substrings."""
     return re.compile(r"(?<![A-Za-z0-9])" + re.escape(term) + r"(?![A-Za-z0-9])", re.I)
 
 
@@ -120,7 +147,8 @@ def iter_files(root):
 
 
 def scan(root, terms_path=None, terms_required=True, allow=None, explain=False):
-    """在进程内可调用（自证不靠子进程 —— cron 无 PATH）。→ (rc, lines)"""
+    """Callable in-process (the self-test does not use a subprocess -- cron has no PATH).
+    -> (rc, lines)"""
     root = os.path.abspath(root)
     allow = ALLOW if allow is None else allow
     if terms_path is None:
@@ -167,28 +195,28 @@ def scan(root, terms_path=None, terms_required=True, allow=None, explain=False):
     sh = [h for h in hits if h[1] in SHAPE_RULES]
     lt = [h for h in hits if h[1] == TERM_RULE]
 
-    lines = ["leakscan root=…%s"
+    lines = ["leakscan root=...%s"
              % os.path.basename(root)]
     if tstat == "RAN":
-        lines.append("  词表 %s（%d 词）" % (_rel(terms_path, root), len(terms)))
+        lines.append("  terms %s (%d terms)" % (_rel(terms_path, root), len(terms)))
     if explain:
         for rel, rule, sample, reason in allowed:
-            lines.append("  allow  %s: %s -> %r  （%s）" % (rel, rule, sample[:60], reason))
+            lines.append("  allow  %s: %s -> %r  (%s)" % (rel, rule, sample[:60], reason))
     for rel, rule, sample in hits:
         lines.append("  LEAK   %s: %s -> %r" % (rel, rule, sample[:60]))
 
-    lines.append("L1 形状层  rules=%d files=%d hits=%d  %s" % (
+    lines.append("L1 shape layer  rules=%d files=%d hits=%d  %s" % (
         len(SHAPES), scanned, len(sh), "FAIL" if sh else "PASS"))
     if tstat == "SKIPPED":
-        lines.append("L2 字面层  **未跑**（--shape-only）：本次运行的绿**不证明**字面词那一半")
+        lines.append("L2 literal layer  **NOT RUN** (--shape-only): this run's green does **not prove** the literal-term half")
     elif tstat == "MISSING":
-        lines.append("L2 字面层  词表读不到（%s）→ UNDECIDABLE，不猜成 PASS"
+        lines.append("L2 literal layer  terms unreadable (%s) -> UNDECIDABLE, not guessed as PASS"
                      % _rel(terms_path, root))
     else:
-        lines.append("L2 字面层  terms=%d hits=%d  %s" % (
+        lines.append("L2 literal layer  terms=%d hits=%d  %s" % (
             len(terms), len(lt), "FAIL" if lt else "PASS"))
     if binary:
-        lines.append("  注：跳过二进制文件 %d 个（本工具不判二进制里嵌的信息）" % binary)
+        lines.append("  note: skipped %d binary file(s) (this tool does not inspect data embedded in binaries)" % binary)
 
     if hits:
         rc = 1
@@ -202,13 +230,13 @@ def scan(root, terms_path=None, terms_required=True, allow=None, explain=False):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="公开仓隐私闸（机器路径 / 操作者字面词）")
+    ap = argparse.ArgumentParser(description="Public-repo privacy gate (machine paths / operator literal terms)")
     ap.add_argument("root", nargs="?", default=REPO)
     ap.add_argument("--terms", default=None,
-                    help="词表路径。默认 <root>/_local/privterms.txt（gitignore）")
+                    help="term list path. Default <root>/_local/privterms.txt (gitignored)")
     ap.add_argument("--shape-only", action="store_true",
-                    help="只跑 L1 形状层（CI 用；输出会明写「L2 未跑」）")
-    ap.add_argument("--explain", action="store_true", help="逐条列出豁免及理由")
+                    help="run the L1 shape layer only (used by CI; the output states 'L2 not run')")
+    ap.add_argument("--explain", action="store_true", help="list every exemption with its reason")
     a = ap.parse_args(argv)
     try:
         rc, lines = scan(a.root, terms_path=a.terms,

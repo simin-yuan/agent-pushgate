@@ -1,27 +1,33 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""falsify_history_gate.py — 对 history_gate 做变异测试：**自证必须跟着红**
+"""falsify_history_gate.py -- mutation test against history_gate: **the self-test must go red
+with it**
 
-为什么：一道闸的自证绿了，不等于这道闸真的在看东西 —— 可能它压根没接上、或恒返回 0
-（verify 纪律：打不红的检查是装饰）。做法：把闸复制到临时目录，注入三种**已知会让它失能**
-的变异，然后跑它自己的自证：
+Why: a green self-test for a gate does not prove the gate is actually looking at anything --
+it may be unwired, or always return 0 (verify discipline: a check you cannot make fail is
+decoration). Method: copy the gate into a temp dir, inject three mutations **known to disable
+it**, then run its own self-test:
 
-| 变异 | 期望 |
+| mutation | expectation |
 |---|---|
-| 失能判红（`rc = FAIL` 到达不了） | 自证红在 `B 中间提交的脏 blob` |
-| 永不回显（`mask()` 直接返回样本） | 自证红在 `B 打码写明` |
-| 把已推的对象也扫进来（范围改成 `HEAD`） | 自证红在 `D 已推的不在范围` |
+| disabling the failure verdict (`rc = FAIL` unreachable) | self-test red on `B dirty blob in a middle commit` |
+| never echoing ( `mask()` returns the sample ) | self-test red on `B masking is stated` |
+| scanning already-pushed objects too (range changed to `HEAD`) | self-test red on `D already-pushed is out of range` |
 
-对照（未变异副本）必须绿；**变异串没匹配上 = 这条变异没验证**，也算失败。
+The control (unmutated copy) must be green; **a mutation string that does not match = that
+mutation was not verified**, which also counts as a failure.
 
-判红必须**红在对的用例上**（看用例名，不看退出码）—— 只数 rc 会把「模块加载崩了」当成
-「闸被抓到了」（跑过验证 ≠ 验证的是那件事）。
+Red must be **on the right case** (look at the case name, not the exit code) -- counting rc
+alone would let "the module crashed on load" pass as "the gate was caught" (having run a
+verification is not the same as the verification being of that thing).
 
-**在临时目录里跑，不碰本仓**：闸 import 同级模块（leakscan / pushscope_gate），所以把这些
-副本一起拷进临时目录，让 `HERE=tmp` 也能 import —— 这样仓里不会出现变异文件。
+**Runs in a temp dir, does not touch this repo**: the gate imports sibling modules (leakscan /
+pushscope_gate), so those copies are placed into the temp dir as well, letting `HERE=tmp`
+import them -- that way no mutated file ever appears in the repo.
 
-用法：python verify/falsify_history_gate.py [--repo PATH]
-退出码 0 = 对照绿 + 三条变异全被抓到 / 1 = 有变异没被抓到或没打上 / 3 = 环境不足
+Usage: python verify/falsify_history_gate.py [--repo PATH]
+Exit code 0 = control green + all three mutations caught / 1 = a mutation was not caught or
+not applied / 3 = environment shortfall
 """
 import argparse
 import os
@@ -35,20 +41,20 @@ REPO = os.path.normpath(os.path.join(HERE, os.pardir))
 NEED = ["history_gate.py", "selftest_history_gate.py", "leakscan.py",
         "pushscope_gate.py", "bridge_landed.py"]
 
-#: (变异名, 原文, 替换成, 自证里应该变红的用例名)
+#: (mutation name, original text, replacement, the self-test case name that should go red)
 MUTANTS = [
-    ("失能判红（rc 恒 0）",
+    ("disabling the failure verdict (rc always 0)",
      "    if hits:\n        rc = FAIL",
      "    if False:\n        rc = FAIL",
-     "B 中间提交的脏 blob（应红）"),
-    ("永不回显（mask 直接返回样本）",
+     "B dirty blob in a middle commit (should go red)"),
+    ("never echoing (mask returns the sample)",
      'return "<<masked len=%d>>" % len(sample or "")',
      'return sample or ""',
-     "B 打码写明（不只沉默）"),
-    ("把已推的对象也扫进来",
+     "B masking is stated (not just silence)"),
+    ("scanning already-pushed objects too",
      '"rev-list", "--objects", "%s..HEAD" % ref',
      '"rev-list", "--objects", "HEAD"',
-     "D 已推的不在范围（应绿）"),
+     "D already-pushed is out of range (expect green)"),
 ]
 
 
@@ -59,7 +65,7 @@ def main(argv=None):
     vdir = os.path.join(os.path.abspath(a.repo), "verify")
     missing = [f for f in NEED if not os.path.isfile(os.path.join(vdir, f))]
     if missing:
-        print("RUNNER NOT READY   缺文件：%s" % ", ".join(missing))
+        print("RUNNER NOT READY   missing files: %s" % ", ".join(missing))
         return 3
 
     tmp = tempfile.mkdtemp(prefix="falsify_history_")
@@ -76,10 +82,10 @@ def main(argv=None):
         return p.returncode, (p.stdout or "") + (p.stderr or "")
 
     control_rc, out = run()
-    print("对照（未变异）  rc=%d  %s" % (control_rc, "OK" if control_rc == 0 else "**不符**"))
+    print("control (unmutated)  rc=%d  %s" % (control_rc, "OK" if control_rc == 0 else "**MISMATCH**"))
     if control_rc != 0:
         print(out[-1500:])
-        print("RUNNER NOT READY   未变异副本自证就不绿，变异测试无从谈起")
+        print("RUNNER NOT READY   the unmutated copy's self-test is not green, so a mutation test means nothing")
         return 3
 
     ok, total = 0, len(MUTANTS)
@@ -88,7 +94,7 @@ def main(argv=None):
         with open(pristine, encoding="utf-8") as f:
             body = f.read()
         if old not in body:
-            print("  [MISS] %-26s 变异串没匹配上（原文已变？）—— 这条变异没验证" % name)
+            print("  [MISS] %-26s mutation string did not match (original changed?) -- this mutation was not verified" % name)
             continue
         with open(src_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(body.replace(old, new, 1))
@@ -96,12 +102,12 @@ def main(argv=None):
         caught = (rc == 1) and (case_label in out)
         with open(src_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(body)
-        print("  [%s] %-26s rc=%d  期望红在：%s" % ("OK" if caught else "MISS", name, rc, case_label))
+        print("  [%s] %-26s rc=%d  expect red on: %s" % ("OK" if caught else "MISS", name, rc, case_label))
         if not caught:
             print("        " + " | ".join(l.strip() for l in out.splitlines()[-4:]))
         ok += 1 if caught else 0
 
-    print("SUMMARY falsify %d/%d（对照 rc=%d）" % (ok, total, control_rc))
+    print("SUMMARY falsify %d/%d (control rc=%d)" % (ok, total, control_rc))
     return 0 if ok == total else 1
 
 

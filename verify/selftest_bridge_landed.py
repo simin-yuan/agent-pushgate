@@ -1,23 +1,26 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""selftest_bridge_landed.py — 证明 bridge_landed.py 能说是，也能说不。
+"""selftest_bridge_landed.py -- prove bridge_landed.py can say yes and can say no.
 
-做法：在临时目录里自造一个**本地裸仓**当远程，用真的 git 摆出四种状态，
-四种状态都走 bridge_landed 的**真路径**（argv → 取 sha → 判定 → 打印 → 退出码），不 mock。
+How: build a **local bare repo** in temp as the remote, stage four states with real git, and
+drive each through bridge_landed's **real path** (argv -> get shas -> decide -> print -> exit
+code), no mocks.
 
-    A 落地        commit + push              → rc 0 / LANDED
-    B 卡住        再 commit（时间戳 5h 前）不推 → rc 1 / STALE
-    C 恢复        推上去                      → rc 0 / LANDED（证明它不是恒红）
-    D 容忍窗内    再 commit（当前时间）不推     → rc 0 / PENDING
-    E 取不到远程  remote 指向不存在的路径      → rc 2 / UNDECIDABLE
-    F 那 2 算不算通过                          → 显式断言 E 的 rc != 0
+    A landed          commit + push                    -> rc 0 / LANDED
+    B stuck           another commit (timestamp 5h ago) not pushed -> rc 1 / STALE
+    C recovers        pushed                           -> rc 0 / LANDED (proves it is not always red)
+    D within window   another commit (current time) not pushed -> rc 0 / PENDING
+    E remote unreachable  remote points at a non-existent path -> rc 2 / UNDECIDABLE
+    F is that 2 a pass?   explicitly assert E's rc != 0
 
-不读 live 仓、不联网、不依赖 _local/。--target 可指向模块的**被改坏的副本**，
-好让「先把检查改坏、自证必须跟着红」这件事有地方做。
+Does not read the live repo, no network, does not depend on _local/. --target can point at a
+**broken copy** of the module, so that "break the check first, the self-test must go red with
+it" has somewhere to happen.
 
-用法
+Usage
     python verify/selftest_bridge_landed.py [--target PATH] [--git PATH]
-退出码 0 = 全部符合预期 / 1 = 有用例不符 / 3 = 环境不足（跑不了，不算通过）
+Exit code 0 = everything as expected / 1 = a case did not match / 3 = environment shortfall
+(cannot run, not counted as pass)
 """
 import argparse
 import contextlib
@@ -36,7 +39,7 @@ MAX_AGE_H = 2.0
 def load(target):
     spec = importlib.util.spec_from_file_location("bridge_landed_target", target)
     if spec is None or spec.loader is None:
-        raise RuntimeError("load 不了目标模块：%s" % target)
+        raise RuntimeError("cannot load target module: %s" % target)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -73,7 +76,7 @@ def main(argv=None):
     import bridge_landed as ref                                    # noqa: E402
     gitp = a.git or ref.find_git()
     if not gitp:
-        print("RUNNER NOT READY   找不到 git —— 这种情形下不许报通过")
+        print("RUNNER NOT READY   no git found -- in this situation a pass must not be reported")
         print("SUMMARY cases=0 fail=0 rc=3")
         return 3
 
@@ -87,7 +90,7 @@ def main(argv=None):
         ok = (got_rc == want_rc) and all(s in out for s in must_contain)
         cases.append((name, got_rc, want_rc, ok))
         if not ok:
-            failures.append("%s: rc=%s(期望 %s) 缺 %r\n%s"
+            failures.append("%s: rc=%s(want %s) missing %r\n%s"
                             % (name, got_rc, want_rc,
                                [s for s in must_contain if s not in out], out[-500:]))
         return ok
@@ -95,7 +98,8 @@ def main(argv=None):
     try:
         git(gitp, root, ["init", "-q", "--bare", "-b", "main", origin])
         git(gitp, root, ["init", "-q", "-b", "main", work])
-        # 用**相对路径**当远程 URL：绝对路径在这里会被 file:// / 盘符 / MSYS 来回翻译坏掉
+        # A **relative path** as the remote URL: an absolute path gets mangled here by
+        # file:// / drive-letter / MSYS translation
         git(gitp, work, ["remote", "add", "origin",
                          os.path.relpath(origin, work).replace("\\", "/")])
         with open(os.path.join(work, "f.txt"), "w", encoding="utf-8") as fh:
@@ -105,44 +109,45 @@ def main(argv=None):
         git(gitp, work, ["push", "-q", "-u", "origin", "main"])
 
         rc, out = run_check(mod, work, gitp)                       # A
-        expect("A 落地", rc, 0, out, ["LANDED"])
+        expect("A landed", rc, 0, out, ["LANDED"])
 
         with open(os.path.join(work, "f.txt"), "w", encoding="utf-8") as fh:
             fh.write("2\n")
         git(gitp, work, ["add", "-A"])
-        # 时间戳用「现在 - 5h」摆，不写字面日期：字面日期会随时间推移失效（今天红、明天不红）
+        # Stage the timestamp as "now - 5h", not a literal date: a literal date goes stale over
+        # time (red today, not red tomorrow)
         git(gitp, work, ["commit", "-q", "-m", "two"],
             env_extra={"GIT_COMMITTER_DATE": _hours_ago(5)})
         rc, out = run_check(mod, work, gitp)                       # B
-        expect("B 卡住 5h", rc, 1, out, ["STALE"])
+        expect("B stuck 5h", rc, 1, out, ["STALE"])
 
         git(gitp, work, ["push", "-q", "origin", "main"])
         rc, out = run_check(mod, work, gitp)                       # C
-        expect("C 推上去后恢复", rc, 0, out, ["LANDED"])
+        expect("C recovers after push", rc, 0, out, ["LANDED"])
 
         with open(os.path.join(work, "f.txt"), "w", encoding="utf-8") as fh:
             fh.write("3\n")
         git(gitp, work, ["add", "-A"])
         git(gitp, work, ["commit", "-q", "-m", "three"])
         rc, out = run_check(mod, work, gitp)                       # D
-        expect("D 容忍窗内", rc, 0, out, ["PENDING"])
+        expect("D within tolerance window", rc, 0, out, ["PENDING"])
 
         git(gitp, work, ["remote", "set-url", "origin",
                          os.path.relpath(os.path.join(root, "nope.git"), work)
                          .replace("\\", "/")])
         rc, out = run_check(mod, work, gitp)                       # E
-        expect("E 取不到远程", rc, 2, out, ["UNDECIDABLE"])
+        expect("E remote unreachable", rc, 2, out, ["UNDECIDABLE"])
         if rc == 0:                                                # F
-            failures.append("F: 取不到远程被读成了通过（rc=0）")
-            cases.append(("F 未知不得读成通过", rc, "!=0", False))
+            failures.append("F: an unreachable remote was read as a pass (rc=0)")
+            cases.append(("F unknown must not be read as pass", rc, "!=0", False))
         else:
-            cases.append(("F 未知不得读成通过", rc, "!=0", True))
+            cases.append(("F unknown must not be read as pass", rc, "!=0", True))
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
     passed = len(cases) - len(failures)
     for name, got, want, ok in cases:
-        print("  %-22s rc=%-6s 期望 %-6s %s" % (name, got, want, "OK" if ok else "**不符**"))
+        print("  %-22s rc=%-6s want %-6s %s" % (name, got, want, "OK" if ok else "**MISMATCH**"))
     for f in failures:
         print("  FAIL %s" % f)
     print("SUMMARY cases=%d pass=%d fail=%d target=%s rc=%d"

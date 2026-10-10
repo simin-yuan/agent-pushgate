@@ -1,35 +1,51 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""pushscope_gate.py — 待推提交信息闸：`git push` 送走的不止是树，还有每一条提交信息
+"""pushscope_gate.py -- the gate for the commit messages about to be pushed: `git push` sends
+more than the tree, it sends every commit message too
 
-为什么需要它
-  `verify/leakscan.py` 扫的是**树**（= 马上要被 `git add -A` 提交、push 的文件内容）。
-  但一次 push 送走的是**两样东西**：树，和 `<upstream>..HEAD` 每一条提交的 **message**。
-  树干净、信息里带机器路径 —— 树上照样报 LEAKS=0，而那次 push 会把路径写进 GitHub 的永久历史。
-  实测：一条数据提交的**标题**里就带着本机
-  绝对路径，而树全程绿。来源已核到两端：导出步骤的 privacy_gate() 把闸的第一行
-  打在最前面，自动提交取 `stdout.splitlines()[0]` 拼成提交标题。
+Why it is needed
+  `verify/leakscan.py` scans the **tree** (= the file content that is about to be `git add -A`
+  committed and pushed). But a push sends **two things**: the tree, and the **message** of
+  every commit in `<upstream>..HEAD`. Tree clean, message carrying a machine path -- the tree
+  gate still reports LEAKS=0, and that push writes the path into GitHub's permanent history.
+  Measured: the **title** of a data commit carried this machine's absolute path while the tree
+  was green the whole time. The wiring has been traced end to end: the export step's
+  privacy_gate() prints the gate's first line at the front, and the auto-commit takes
+  `stdout.splitlines()[0]` to build the commit title.
 
-范围 —— 本工具**不包含**什么（缺这一节，判据就会被当成它撑不住的东西）
-  · 只扫 `<upstream>..HEAD` 各提交的 message，**不扫树**（那是 leakscan 的活，两面互补不重叠）。
-  · **不扫已经在上游的提交**：推不走的不是这一次的风险（用例 D 守着这条线）。
-  · 不扫 tag / 分支名 / reflog / stash / notes / PR 正文 —— 都是**未知**，不写成「没有」。
-  · 不判语义换写（同音、拼音、缩写、拆分拼接），与 leakscan 同一条盲区。
-  · **默认不回显命中样本的字面**（打码成「长度」）：本闸的输出会被 the export step 折进
-    下一条提交信息 —— 一个回显它抓到的泄漏的闸，自己就是泄漏源。
-    要看字面用 `--show-samples`，只在输出不进任何发布面时用；正常排障走 `git log -1 <sha>`。
-  · 只认形状（盘符 / UNC / AppData）+ 本机词表；词表在 `_local/`（gitignore），干净 clone 上没有。
+Scope -- what this tool does **not** cover (without this section the checks get treated as
+something they cannot support)
+  - It scans only the messages of `<upstream>..HEAD`, **not the tree** (that is leakscan's job;
+    the two are complementary, not overlapping).
+  - It **does not scan commits already upstream**: what cannot be pushed is not this push's
+    risk (case D guards this line).
+  - It does not scan tag / branch names / reflog / stash / notes / PR bodies -- all of these
+    are **unknown**, not "absent".
+  - It does not judge semantic re-spellings (homophones, transliteration, abbreviations,
+    splitting and concatenation) -- the same blind spot as leakscan.
+  - **It does not echo the literal of a hit sample by default** (masked as a "length"): this
+    gate's output is folded into the next commit message by the export step -- a gate that
+    echoes the leak it caught is itself a leak source. To see the literal use `--show-samples`,
+    only when the output reaches no publishing surface; for normal debugging use
+    `git log -1 <sha>`.
+  - It recognises shapes only (drive letter / UNC / AppData) plus the local term list; the
+    term list lives in `_local/` (gitignored) and is absent on a clean clone.
 
-判据能否给出否定结果
-  `verify/selftest_pushscope_gate.py` 自造本地裸仓当远程，七道用例各摆一种状态：
-  干净信息(0) / 信息带盘符路径(1) / 信息带词表词(1) / 坏信息已在上游(0，范围外) /
-  解析不到上游(2) / 打码两半（默认不回显 · `--show-samples` 回显）/ 词表读不到(2)。
-  `verify/falsify_pushscope_gate.py` 再对本闸做三次变异（判红失能 / 永远回显 / 范围含已推），
-  自证必须跟着红 —— 打不红的检查是装饰。CI 里也会跑（见 .github/workflows/freshness.yml）。
+Can the checks produce a negative result?
+  `verify/selftest_pushscope_gate.py` builds its own local bare repo as the remote and stages
+  one state per case, seven in total: clean messages (0) / drive path in a message (1) /
+  term-list word in a message (1) / a bad message already upstream (0, out of range) /
+  upstream unresolvable (2) / both halves of masking (masked by default - `--show-samples`
+  echoes) / term list unreadable (2).
+  `verify/falsify_pushscope_gate.py` then applies three mutations to this gate (failure verdict
+  disabled / always echo / range includes already-pushed), and the self-test must go red with
+  them -- a check you cannot make fail is decoration. It also runs in CI (see
+  .github/workflows/freshness.yml).
 
-退出码
-  PASS=0 / FAIL=1 / UNDECIDABLE=2 / ERROR=3。FAIL 优先于 UNDECIDABLE。
-  「找不到 git」「不是 git 仓」「解析不到上游」「词表读不到」一律 UNDECIDABLE —— 查不到 ≠ 干净。
+Exit codes
+  PASS=0 / FAIL=1 / UNDECIDABLE=2 / ERROR=3. FAIL takes priority over UNDECIDABLE.
+  "no git found" / "not a git repo" / "upstream unresolvable" / "term list unreadable" are all
+  UNDECIDABLE -- could not check is not the same as clean.
 """
 import argparse
 import os
@@ -42,12 +58,13 @@ PASS, FAIL, UNDECIDABLE, ERROR = 0, 1, 2, 3
 
 
 def find_git(explicit=None):
-    """逐条候选找 git，不靠 which（cron 服务没有 PATH）。
+    """Find git by trying candidates in turn, not via which (the cron service has no PATH).
 
-    候选**不写字面盘符路径**：本文件在公开仓里，任何「盘符 + 反斜杠」的形状都会命中
-    leakscan 的 S1 层 —— 实测过，第一版把候选写成字面安装路径时，这道闸自己就红了
-    。候选由环境变量拼出来（ProgramFiles 是 system 级
-    变量，nssm 的 AppEnvironmentExtra 是**追加**，服务里仍然在）。
+    The candidates do **not** write a literal drive path: this file is in a public repo, and any
+    "drive letter + backslash" shape would hit leakscan's S1 layer -- measured: the first
+    version wrote the candidate as a literal install path and this gate went red on itself.
+    The candidates are assembled from environment variables (ProgramFiles is a system-level
+    variable, nssm's AppEnvironmentExtra **appends**, so it is still there in the service).
     """
     sys.path.insert(0, HERE)
     try:
@@ -68,10 +85,11 @@ def find_git(explicit=None):
 
 
 def disp(path, root):
-    """输出里只留相对路径 / 末段。本闸的 stdout 是**发布面**，
-    绝对路径不进输出 —— 这条规矩对写闸的人同样成立。"""
+    """Keep only a relative path / last segment in the output. This gate's stdout is a
+    **published surface**; an absolute path must not enter the output -- a rule that holds for
+    the people who write the gates too."""
     if not path:
-        return "(默认)"
+        return "(default)"
     try:
         r = os.path.relpath(path, root)
         if not r.startswith(".."):
@@ -88,12 +106,12 @@ def run_git(gitp, repo, args, timeout=120):
 
 
 def mask(sample):
-    """命中样本的打码形态：只说它多长，不说它是什么。"""
+    """The masked form of a hit sample: state its length, not its content."""
     return "<<masked len=%d>>" % len(sample or "")
 
 
 def resolve_upstream(gitp, repo, upstream):
-    """→ (ref, status, why)。status: OK / UNDECIDABLE。"""
+    """-> (ref, status, why). status: OK / UNDECIDABLE."""
     if upstream:
         ref = upstream
     else:
@@ -107,16 +125,17 @@ def resolve_upstream(gitp, repo, upstream):
                     ref = cand
                     break
             if not ref:
-                return None, "UNDECIDABLE", ("取不到上游：@{u} 未设置，"
-                                             "origin/main / origin/master 也不在本地")
+                return None, "UNDECIDABLE", ("no upstream reachable: @{u} is unset and neither "
+                                             "origin/main nor origin/master exists locally")
     v = run_git(gitp, repo, ["rev-parse", "--verify", "--quiet", ref + "^{commit}"])
     if v.returncode != 0 or not (v.stdout or "").strip():
-        return ref, "UNDECIDABLE", "上游 %s 解析不到（本机无该 ref / 未 fetch）" % ref
+        return ref, "UNDECIDABLE", "upstream %s unresolvable (no such ref locally / not fetched)" % ref
     return ref, "OK", ""
 
 
 def list_unpushed(gitp, repo, ref):
-    """→ (records, err)。records = [(sha, message)]；err 非空 = 取不到（不是「没有」）。"""
+    """-> (records, err). records = [(sha, message)]; a non-empty err means it could not be read
+    (not "there are none")."""
     r = run_git(gitp, repo, ["log", "--format=%H%x1f%B%x1e", "%s..HEAD" % ref])
     if r.returncode != 0:
         return None, (r.stderr or "")[-300:]
@@ -132,10 +151,10 @@ def list_unpushed(gitp, repo, ref):
 
 def scan_messages(repo, upstream=None, terms_path=None, terms_required=True,
                   show_samples=False, gitp=None):
-    """进程内可调用（自证与 the export step 都走这里 —— cron 无 PATH，少一个静默失效的环节）。
-    → (rc, lines)"""
+    """Callable in-process (the self-test and the export step both go through here -- cron has
+    no PATH, so one less silently-failing link). -> (rc, lines)"""
     repo = os.path.abspath(repo)
-    tag = "pushscope repo=…%s" % os.path.basename(repo)
+    tag = "pushscope repo=...%s" % os.path.basename(repo)
     if terms_path is None:
         terms_path = os.path.join(repo, "_local", "privterms.txt")
     sys.path.insert(0, HERE)
@@ -143,24 +162,24 @@ def scan_messages(repo, upstream=None, terms_path=None, terms_required=True,
 
     gitp = gitp or find_git()
     if not gitp:
-        return UNDECIDABLE, [tag, "  UNDECIDABLE：找不到 git（cron 无 PATH）—— 没查 ≠ 干净",
+        return UNDECIDABLE, [tag, "  UNDECIDABLE: no git found (cron has no PATH) -- not checked is not clean",
                              "SUMMARY upstream=- commits=? LEAKS=? rc=%d" % UNDECIDABLE]
     if not os.path.isdir(os.path.join(repo, ".git")):
         return UNDECIDABLE, [tag,
-                             "  UNDECIDABLE：这不是 git 仓（没有 .git）—— 查不到「将被 push 的东西」"
-                             "不等于「没有东西会被 push」",
+                             "  UNDECIDABLE: this is not a git repo (no .git) -- failing to see what would"
+                             " be pushed is not the same as nothing being pushed",
                              "SUMMARY upstream=- commits=? LEAKS=? rc=%d" % UNDECIDABLE]
 
     ref, ustat, uwhy = resolve_upstream(gitp, repo, upstream)
-    lines = ["%s 上游=%s 范围=%s..HEAD" % (tag, ref or "(无)", ref or "(无)")]
+    lines = ["%s upstream=%s range=%s..HEAD" % (tag, ref or "(none)", ref or "(none)")]
     if ustat != "OK":
-        lines.append("  UNDECIDABLE：%s" % uwhy)
+        lines.append("  UNDECIDABLE: %s" % uwhy)
         lines.append("SUMMARY upstream=%s commits=? LEAKS=? rc=%d" % (ref or "-", UNDECIDABLE))
         return UNDECIDABLE, lines
 
     recs, err = list_unpushed(gitp, repo, ref)
     if recs is None:
-        lines.append("  UNDECIDABLE：git log %s..HEAD 取不到：%s" % (ref, err))
+        lines.append("  UNDECIDABLE: git log %s..HEAD failed: %s" % (ref, err))
         lines.append("SUMMARY upstream=%s commits=? LEAKS=? rc=%d" % (ref, UNDECIDABLE))
         return UNDECIDABLE, lines
 
@@ -187,20 +206,20 @@ def scan_messages(repo, upstream=None, terms_path=None, terms_required=True,
         lines.append("  LEAK   %s: msg %s -> %s" % (sha[:12], rule, shown))
     sh = [h for h in hits if h[1] in LS.SHAPE_RULES]
     lt = [h for h in hits if h[1] == LS.TERM_RULE]
-    lines.append("C1 提交信息 形状层  commits=%d rules=%d hits=%d  %s"
+    lines.append("C1 commit msg shape layer  commits=%d rules=%d hits=%d  %s"
                  % (len(recs), len(LS.SHAPES), len(sh), "FAIL" if sh else "PASS"))
     if tstat == "SKIPPED":
-        lines.append("C2 提交信息 字面层  **未跑**（terms_required=False）："
-                     "本次运行的绿**不证明**字面词那一半")
+        lines.append("C2 commit msg literal layer  **NOT RUN** (terms_required=False): "
+                     "this run's green does **not prove** the literal-term half")
     elif tstat == "MISSING":
-        lines.append("C2 提交信息 字面层  词表读不到（%s）→ UNDECIDABLE，不猜成 PASS"
+        lines.append("C2 commit msg literal layer  terms unreadable (%s) -> UNDECIDABLE, not guessed as PASS"
                      % disp(terms_path, repo))
     else:
-        lines.append("C2 提交信息 字面层  terms=%d hits=%d  %s"
+        lines.append("C2 commit msg literal layer  terms=%d hits=%d  %s"
                      % (len(terms), len(lt), "FAIL" if lt else "PASS"))
     if hits and not show_samples:
-        lines.append("  注：命中样本默认打码（只给长度）—— 本闸的输出会被折进下一条提交信息"
-                     "。要看字面：git log -1 <sha>。")
+        lines.append("  note: hit samples are masked by default (length only) -- this gate's output is"
+                     " folded into the next commit message. To see the literal: git log -1 <sha>.")
 
     if hits:
         rc = FAIL
@@ -213,17 +232,17 @@ def scan_messages(repo, upstream=None, terms_path=None, terms_required=True,
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="待推提交信息闸（树之外的发布面）")
-    ap.add_argument("--repo", default=REPO, help="被查的仓（默认 = 本脚本所在仓）")
+    ap = argparse.ArgumentParser(description="Gate for the commit messages about to be pushed (a publishing surface beyond the tree)")
+    ap.add_argument("--repo", default=REPO, help="the repo to scan (default = the repo this script lives in)")
     ap.add_argument("--upstream", default=None,
-                    help="上游 ref（默认 @{u}，再退 origin/main、origin/master）")
+                    help="upstream ref (default @{u}, then falling back to origin/main, origin/master)")
     ap.add_argument("--terms", default=None,
-                    help="词表路径。默认 <repo>/_local/privterms.txt（gitignore）")
+                    help="term list path. Default <repo>/_local/privterms.txt (gitignored)")
     ap.add_argument("--shape-only", action="store_true",
-                    help="只跑形状层（干净 clone 用；输出会明写「字面层未跑」）")
+                    help="shape layer only (for a clean clone; the output states 'literal layer not run')")
     ap.add_argument("--show-samples", action="store_true",
-                    help="回显命中字面：**只在输出不进任何发布面时用**")
-    ap.add_argument("--git", default=None, help="git 可执行文件路径（cron 无 PATH）")
+                    help="echo the hit literals: **only when the output reaches no publishing surface**")
+    ap.add_argument("--git", default=None, help="git executable path (cron has no PATH)")
     a = ap.parse_args(argv)
     try:
         rc, lines = scan_messages(a.repo, upstream=a.upstream, terms_path=a.terms,

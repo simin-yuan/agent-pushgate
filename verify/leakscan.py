@@ -230,6 +230,13 @@ def scan(root, terms_path=None, terms_required=True, allow=None, explain=False):
 
 
 def main(argv=None):
+    # This tool prints text taken from the repository (paths, messages, samples). A Windows
+    # console defaults to a legacy code page: one character it cannot encode would abort the
+    # check with UnicodeEncodeError instead of printing a verdict. Escape what it cannot carry.
+    try:
+        sys.stdout.reconfigure(errors="backslashreplace")
+    except Exception:                       # stdout replaced (StringIO) or already wrapped
+        pass
     ap = argparse.ArgumentParser(description="Public-repo privacy gate (machine paths / operator literal terms)")
     ap.add_argument("root", nargs="?", default=REPO)
     ap.add_argument("--terms", default=None,

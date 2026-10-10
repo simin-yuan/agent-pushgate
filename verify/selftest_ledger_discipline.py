@@ -86,8 +86,8 @@ expect("B R1 red: ledger missing the commit id", 1, ["R1 LEDGER_COVERAGE FAIL"],
        preregs=[("PRE_REG_run_001.md", "p", T0)],
        settles=[("RUN_001_SETTLE.md", "s", T0 + 3600)])
 
-# C R1 red: checked [x] but no \u2192 done: marker
-expect("C R1 red: checked without a done marker", 1, ["R1 LEDGER_COVERAGE FAIL", "no \u2192 done:"],
+# C R1 red: checked [x] but no done marker (the marker is U+2192 + "done:")
+expect("C R1 red: checked without a done marker", 1, ["R1 LEDGER_COVERAGE FAIL", "no done marker"],
        plan=plan_text(with_marker=False), ledger=ledger_line(),
        preregs=[("PRE_REG_run_001.md", "p", T0)],
        settles=[("RUN_001_SETTLE.md", "s", T0 + 3600)])

@@ -289,6 +289,13 @@ def scan_history(repo, upstream=None, terms_path=None, terms_required=True,
 
 
 def main(argv=None):
+    # This tool prints text taken from the repository (paths, messages, samples). A Windows
+    # console defaults to a legacy code page: one character it cannot encode would abort the
+    # check with UnicodeEncodeError instead of printing a verdict. Escape what it cannot carry.
+    try:
+        sys.stdout.reconfigure(errors="backslashreplace")
+    except Exception:                       # stdout replaced (StringIO) or already wrapped
+        pass
     ap = argparse.ArgumentParser(description="Privacy gate for the object content of the range about to be pushed (the third thing, beyond tree and messages)")
     ap.add_argument("--repo", default=REPO, help="the repo to scan (default = the repo this script lives in)")
     ap.add_argument("--upstream", default=None,

@@ -101,6 +101,13 @@ def write_log(repo, rc, base):
 
 
 def main(argv=None):
+    # This tool prints text taken from the repository (paths, messages, samples). A Windows
+    # console defaults to a legacy code page: one character it cannot encode would abort the
+    # check with UnicodeEncodeError instead of printing a verdict. Escape what it cannot carry.
+    try:
+        sys.stdout.reconfigure(errors="backslashreplace")
+    except Exception:                       # stdout replaced (StringIO) or already wrapped
+        pass
     ap = argparse.ArgumentParser(description="Privacy gate on the manual push path (tree + commit messages + objects about to be pushed)")
     ap.add_argument("--repo", default=REPO, help="the repo to scan (default = the repo this script lives in)")
     ap.add_argument("--upstream", default=None,

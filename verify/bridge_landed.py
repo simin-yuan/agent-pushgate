@@ -37,7 +37,8 @@ something they cannot support)
       **no credentials** and performs no network write.
     - It does not judge whether any other gate ran: it only compares this repository's
       local HEAD with its remote-tracking ref.
-    - The age is taken from the committer timestamp `%cI`, and it **depends on the local clock**;
+    - The age is taken from the committer timestamp `%cI` (the trailing `Z` git writes for a UTC
+      commit is normalised to `+00:00` before parsing), and it **depends on the local clock**;
       if the local clock is wrong, the age is wrong.
     - The remote sha comes from `git ls-remote` (authoritative), **not** from the local
       `origin/*` tracking ref -- the latter is only updated by this machine's push/fetch, so a
@@ -118,7 +119,12 @@ def oldest_age_h(rows, now=None):
     stamps = []
     for _sha, iso in rows or []:
         try:
-            stamps.append(datetime.datetime.fromisoformat(iso).astimezone(datetime.timezone.utc))
+            # git prints a UTC committer date as "...T04:47:33Z"; datetime.fromisoformat only
+            # accepts the trailing "Z" from Python 3.11 on. On 3.9/3.10 a UTC host therefore got
+            # UNDECIDABLE for every stuck commit -- the check never reported STALE there.
+            # Normalise it, exactly as the ledger rule already does.
+            stamps.append(datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+                          .astimezone(datetime.timezone.utc))
         except ValueError:
             return None
     if not stamps:
@@ -148,6 +154,13 @@ def decide(local_sha, remote_sha, age_h, max_age_h):
 
 
 def main(argv=None):
+    # This tool prints text taken from the repository (paths, messages, samples). A Windows
+    # console defaults to a legacy code page: one character it cannot encode would abort the
+    # check with UnicodeEncodeError instead of printing a verdict. Escape what it cannot carry.
+    try:
+        sys.stdout.reconfigure(errors="backslashreplace")
+    except Exception:                       # stdout replaced (StringIO) or already wrapped
+        pass
     ap = argparse.ArgumentParser(description="Has the local commit actually been pushed (local HEAD vs remote branch)")
     ap.add_argument("--repo", default=REPO)
     ap.add_argument("--remote", default="origin")

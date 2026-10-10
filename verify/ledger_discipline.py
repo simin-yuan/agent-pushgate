@@ -187,7 +187,7 @@ def rule_r1(plan_path, hay):
     for tid, _c, block in done:
         if marker not in block:
             no_marker.append(tid)
-            rows.append("   -> %s has [x] but no %s marker" % (tid, marker))
+            rows.append("   -> %s has [x] but no done marker (needs U+2192 + 'done:')" % tid)
             continue
         refs = product_refs(block)
         hit = [t for t in refs if t in hay]
@@ -201,7 +201,8 @@ def rule_r1(plan_path, hay):
     if missing or no_marker:
         return FAIL, "done=%d covered=%d missing=%d %s %s" % (
             len(done), n_ok, len(missing), " ".join(missing),
-            ("| has [x] but no %s %s" % (marker, ",".join(no_marker))) if no_marker else ""), rows
+            ("| has [x] but no done marker (needs U+2192 + 'done:'): %s"
+             % ",".join(no_marker)) if no_marker else ""), rows
     return PASS, "done=%d covered=%d" % (len(done), n_ok), rows
 
 
@@ -288,6 +289,13 @@ def check(plan_path, ledger_path, prereg_dir, explain=False):
 
 
 def main():
+    # This tool prints text taken from the repository (paths, messages, samples). A Windows
+    # console defaults to a legacy code page: one character it cannot encode would abort the
+    # check with UnicodeEncodeError instead of printing a verdict. Escape what it cannot carry.
+    try:
+        sys.stdout.reconfigure(errors="backslashreplace")
+    except Exception:                       # stdout replaced (StringIO) or already wrapped
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--plan", default=DEF_PLAN)
     ap.add_argument("--ledger", default=DEF_LEDGER)

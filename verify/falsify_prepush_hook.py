@@ -89,13 +89,13 @@ def main():
         tag = label.split()[0]
         dst = make_copy(tag)
         target = os.path.join(dst, path)
-        with open(target, encoding="utf-8", newline="") as fh:
+        with open(target, encoding="utf-8") as fh:
             src = fh.read()
         if a not in src:
             print("  UNDECIDABLE  %s: the anchor to mutate was not found (the check itself drifted)" % label)
             total += 1
             continue
-        with open(target, "w", encoding="utf-8", newline="") as fh:
+        with open(target, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(src.replace(a, b, 1))
         mod = load_mod(dst, tag)
         res = run_cases(mod, CASES[tag])

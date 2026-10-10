@@ -35,7 +35,8 @@ something they cannot support)
     - It compares shas only; it does not judge whether remote content matches local content.
     - It does not judge the cause of failure (credentials / network / permissions), it reads
       **no credentials** and performs no network write.
-    - It does not judge whether the GitHub-side gates ran (that is verify/check.py's job).
+    - It does not judge whether any other gate ran: it only compares this repository's
+      local HEAD with its remote-tracking ref.
     - The age is taken from the committer timestamp `%cI`, and it **depends on the local clock**;
       if the local clock is wrong, the age is wrong.
     - The remote sha comes from `git ls-remote` (authoritative), **not** from the local

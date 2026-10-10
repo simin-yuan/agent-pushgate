@@ -1,0 +1,8 @@
+# Line endings: LF in the blobs, LF in every checkout.
+#
+# Without this, a clone on Windows with core.autocrlf=true gets CRLF working copies, and a
+# multi-line mutation anchor written with \n stops matching the file it is meant to sabotage.
+# Measured before this file existed: the falsification harness reported 3/4 on a fresh Windows
+# clone while the authoring tree was green -- the mutant was silently never applied.
+# Forcing LF also keeps tools/git-hooks/pre-push a clean shell script everywhere.
+* text=auto eol=lf

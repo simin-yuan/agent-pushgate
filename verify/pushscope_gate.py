@@ -39,8 +39,8 @@ Can the checks produce a negative result?
   echoes) / term list unreadable (2).
   `verify/falsify_pushscope_gate.py` then applies three mutations to this gate (failure verdict
   disabled / always echo / range includes already-pushed), and the self-test must go red with
-  them -- a check you cannot make fail is decoration. It also runs in CI (see
-  .github/workflows/freshness.yml).
+  them -- a check you cannot make fail is decoration. It also runs on every push and pull
+  request in CI (see .github/workflows/tests.yml).
 
 Exit codes
   PASS=0 / FAIL=1 / UNDECIDABLE=2 / ERROR=3. FAIL takes priority over UNDECIDABLE.

@@ -1,5 +1,7 @@
 # agent-pushgate
 
+[![tests](https://github.com/simin-yuan/agent-pushgate/actions/workflows/tests.yml/badge.svg)](https://github.com/simin-yuan/agent-pushgate/actions/workflows/tests.yml)
+
 A pre-push safety gate for **anything that pushes to a public repo — especially AI
 agents**. It answers one question before code leaves your machine: *what is this push
 actually going to send, besides the diff you intended?*

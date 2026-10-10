@@ -26,7 +26,8 @@ something they cannot support)
   - R1 only proves "this commit-id/path string appeared somewhere in the ledger". It does
     **not** prove the artifact really exists, does not prove it hangs under the right work
     item, and does not check whether someone else wrote it. Whether the artifact is really on
-    disk is `works/workline_check.py`'s job; this tool does not build a second copy of that.
+    disk is out of scope: read the disk or the version control yourself; this tool does not
+    build a second copy of a file-existence check.
     Matching is **loose**: a string appearing in any one ledger record counts as covered; it
     does no "which work item should own which artifact" attribution.
   - R1 **cannot tell a reference from an antonym**: "this path was delivered" and "this path was

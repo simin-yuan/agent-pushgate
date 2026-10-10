@@ -1,0 +1,55 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gates:
+    name: ${{ matrix.os }} / python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.9', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The fixtures the self-tests build are real repositories that commit, so git needs an
+      # identity. `shell: bash` makes every step stop at the first failing script.
+      - name: Configure git
+        shell: bash
+        run: |
+          git config --global user.name  "ci"
+          git config --global user.email "ci@example.invalid"
+
+      # Each script exits non-zero on its own failure, so a red step names the failing one.
+      - name: Self-tests
+        shell: bash
+        run: |
+          python -u verify/selftest_leakscan.py
+          python -u verify/selftest_pushscope_gate.py
+          python -u verify/selftest_history_gate.py
+          python -u verify/selftest_ledger_discipline.py
+          python -u verify/selftest_prepush_hook.py
+          python -u verify/selftest_bridge_landed.py
+
+      # A check you cannot make fail is decoration: every mutant has to be caught.
+      - name: Falsification
+        shell: bash
+        run: |
+          python -u verify/falsify_history_gate.py
+          python -u verify/falsify_pushscope_gate.py
+          python -u verify/falsify_prepush_hook.py
+
+      # Scan this repository with its own scanner. A clean clone has no _local/ term list, so
+      # only the shape layer runs: a green step here does NOT prove the literal-term layer.
+      - name: Scan this repo (shape layer only)
+        shell: bash
+        run: python -u verify/leakscan.py . --shape-only

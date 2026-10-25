@@ -83,4 +83,4 @@ dependencies** (stdlib only; git is required for the history/push-scope gates).
 
 MIT — see [LICENSE](LICENSE).
 
-© 2026 Simin (Simon) Yuan — ORCID [0009-0002-6843-3390](https://orcid.org/0009-0002-6843-3390) · [github.com/simin-yuan](https://github.com/simin-yuan).
+© 2026 Simin Yuan — ORCID [0009-0002-6843-3390](https://orcid.org/0009-0002-6843-3390) · [github.com/simin-yuan](https://github.com/simin-yuan).
